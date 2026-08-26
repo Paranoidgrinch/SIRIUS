@@ -1,4 +1,4 @@
-import json
+﻿import json
 
 import pytest
 
@@ -201,6 +201,36 @@ def test_state_json_contains_schema_version(tmp_path):
 
     data = json.loads(path.read_text(encoding="utf-8"))
 
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["state_id"] == state.state_id
     assert data["created_at_utc"] == state.created_at_utc
+
+def test_command_and_readback_are_independent():
+    state = MachineState(
+        mass_u=60.0,
+        parameters={
+            "extraction_voltage_v": 19000.0,
+        },
+        readbacks={
+            "extraction_voltage_v": 18600.0,
+        },
+    )
+
+    state.validate()
+
+    assert state.parameters["extraction_voltage_v"] == 19000.0
+    assert state.readbacks["extraction_voltage_v"] == 18600.0
+
+
+def test_readback_does_not_have_to_match_command_limits():
+    state = MachineState(
+        mass_u=60.0,
+        parameters={
+            "extraction_voltage_v": 19000.0,
+        },
+        readbacks={
+            "extraction_voltage_v": 18612.3,
+        },
+    )
+
+    state.validate()

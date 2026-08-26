@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +11,7 @@ from uuid import uuid4
 from sirius.parameters import PARAMETERS
 
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 
 
 def utc_now_iso() -> str:
@@ -36,7 +37,12 @@ class RFQState:
 class MachineState:
     mass_u: float
 
+    # Values SIRIUS sends to FLAVIA.
     parameters: dict[str, float]
+
+    # Physical values reported back by FLAVIA.
+    # These are deliberately stored independently from the commands.
+    readbacks: dict[str, float] = field(default_factory=dict)
 
     cup: int | None = None
     stage: int | None = None
@@ -65,15 +71,28 @@ class MachineState:
 
         for name, value in self.parameters.items():
             if name not in PARAMETERS:
-                raise ValueError(f"Unknown SIRIUS parameter: {name}")
+                raise ValueError(
+                    f"Unknown SIRIUS parameter: {name}"
+                )
 
             definition = PARAMETERS[name]
 
             if not definition.minimum <= value <= definition.maximum:
                 raise ValueError(
-                    f"{name}={value} outside allowed state range "
+                    f"{name}={value} outside allowed command range "
                     f"{definition.minimum}..{definition.maximum} "
                     f"{definition.unit}"
+                )
+
+        for name, value in self.readbacks.items():
+            if name not in PARAMETERS:
+                raise ValueError(
+                    f"Unknown SIRIUS readback parameter: {name}"
+                )
+
+            if not math.isfinite(float(value)):
+                raise ValueError(
+                    f"Readback for {name} must be finite"
                 )
 
         self._validate_rfq()
@@ -144,6 +163,9 @@ class MachineState:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MachineState":
         data = dict(data)
+
+        # Backward compatibility with schema version 1.
+        data.setdefault("readbacks", {})
 
         rfq_data = data.pop("rfq", {})
         rfq = RFQState(**rfq_data)
