@@ -1,0 +1,16 @@
+﻿__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.env
+
+data/runs/*
+!data/runs/.gitkeep
+
+data/mass_profiles/*
+!data/mass_profiles/.gitkeep
+
+.idea/
+.vscode/
