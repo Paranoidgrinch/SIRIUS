@@ -1,0 +1,931 @@
+from __future__ import annotations
+
+import math
+import time
+from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Callable, Mapping
+
+from sirius.comparison import ComparisonPolicy
+from sirius.mass_profile import MassProfile
+from sirius.measurement import (
+    BeamMeasurement,
+    MeasurementPolicy,
+    measure_beam_current,
+)
+from sirius.parameters import PARAMETERS
+from sirius.reference import (
+    SourceReference,
+    SourceReferenceTracker,
+    TransmissionResult,
+    transmission_from_reference,
+)
+from sirius.reference_orchestrator import (
+    SourceReferenceCheckResult,
+    perform_source_reference_check,
+)
+from sirius.scan1d import ScanPolicy
+from sirius.settling import SettlingPolicy
+from sirius.state import (
+    MachineState,
+    utc_now_iso,
+)
+from sirius.transition import (
+    capture_readbacks,
+)
+from sirius.transmission_scan1d import (
+    TransmissionScanResult,
+    scan_parameter_transmission_1d,
+)
+
+
+CUP2_PRIMARY_PARAMETERS = (
+    "lens2_voltage_v",
+    "steerer_x1_v",
+    "steerer_y1_v",
+)
+
+CUP2_UPSTREAM_RETUNE_PARAMETERS = (
+    "einzel_lens_voltage_v",
+)
+
+CUP2_FROZEN_CUP1_PARAMETERS = (
+    "sputter_voltage_v",
+    "extraction_voltage_v",
+    "magnet_current_a",
+)
+
+CUP2_REQUIRED_PARAMETERS = (
+    *CUP2_PRIMARY_PARAMETERS,
+    *CUP2_UPSTREAM_RETUNE_PARAMETERS,
+    *CUP2_FROZEN_CUP1_PARAMETERS,
+)
+
+
+class Cup2OptimizationError(RuntimeError):
+    pass
+
+
+class Cup2OptimizationNoBeamError(
+    Cup2OptimizationError
+):
+    pass
+
+
+@dataclass(frozen=True)
+class Cup2OptimizationPolicy:
+    """
+    Initial Cup-2 coordinate-descent policy.
+
+    Lens2 and X1/Y1 are primary Cup-2 controls.
+    The einzel lens gets only a narrower upstream retuning window.
+    """
+
+    lens2_half_width_v: float = 3000.0
+
+    lens2_scan: ScanPolicy = field(
+        default_factory=lambda: ScanPolicy(
+            steps=(
+                500.0,
+                100.0,
+                25.0,
+            )
+        )
+    )
+
+    steerer_half_width_v: float = 150.0
+
+    steerer_scan: ScanPolicy = field(
+        default_factory=lambda: ScanPolicy(
+            steps=(
+                50.0,
+                10.0,
+                2.0,
+            )
+        )
+    )
+
+    einzel_half_width_v: float = 800.0
+
+    einzel_scan: ScanPolicy = field(
+        default_factory=lambda: ScanPolicy(
+            steps=(
+                200.0,
+                50.0,
+            )
+        )
+    )
+
+    coordinate_passes: int = 2
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            (
+                "lens2_half_width_v",
+                self.lens2_half_width_v,
+            ),
+            (
+                "steerer_half_width_v",
+                self.steerer_half_width_v,
+            ),
+            (
+                "einzel_half_width_v",
+                self.einzel_half_width_v,
+            ),
+        ):
+            if not math.isfinite(
+                float(value)
+            ):
+                raise ValueError(
+                    f"{name} must be finite"
+                )
+
+            if value <= 0:
+                raise ValueError(
+                    f"{name} must be greater than zero"
+                )
+
+        if self.coordinate_passes < 1:
+            raise ValueError(
+                "coordinate_passes must be at least 1"
+            )
+
+
+@dataclass(frozen=True)
+class Cup2OptimizationResult:
+    initial_state: MachineState
+
+    scans: tuple[
+        TransmissionScanResult,
+        ...
+    ]
+
+    reference_checks: tuple[
+        SourceReferenceCheckResult,
+        ...
+    ]
+
+    final_state: MachineState
+
+    final_measurement: BeamMeasurement
+    final_reference: SourceReference
+    final_transmission: TransmissionResult
+
+
+def _commands_equal(
+    first: float,
+    second: float,
+) -> bool:
+    return math.isclose(
+        float(first),
+        float(second),
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+
+
+def _local_profile(
+    profile: MassProfile,
+    parameter_name: str,
+    center: float,
+    half_width: float,
+) -> MassProfile:
+    """
+    Build an ephemeral local search window without modifying persistent
+    learned bounds.
+    """
+
+    local = deepcopy(
+        profile
+    )
+
+    hard = PARAMETERS[
+        parameter_name
+    ]
+
+    learned_minimum, learned_maximum = (
+        profile.effective_bounds(
+            parameter_name
+        )
+    )
+
+    allowed_minimum = max(
+        float(hard.minimum),
+        min(
+            float(center),
+            float(learned_minimum),
+        ),
+    )
+
+    allowed_maximum = min(
+        float(hard.maximum),
+        max(
+            float(center),
+            float(learned_maximum),
+        ),
+    )
+
+    local_minimum = max(
+        allowed_minimum,
+        float(center)
+        - float(half_width),
+    )
+
+    local_maximum = min(
+        allowed_maximum,
+        float(center)
+        + float(half_width),
+    )
+
+    local.set_learned_range(
+        parameter_name,
+        local_minimum,
+        local_maximum,
+        source="cup2_local_window",
+    )
+
+    return local
+
+
+def _retag_final_state(
+    state: MachineState,
+) -> MachineState:
+    result = MachineState(
+        mass_u=state.mass_u,
+        parameters=dict(
+            state.parameters
+        ),
+        readbacks=dict(
+            state.readbacks
+        ),
+        cup=2,
+        stage=2,
+        role="stage_best",
+        rfq=deepcopy(
+            state.rfq
+        ),
+        fixed_conditions=deepcopy(
+            state.fixed_conditions
+        ),
+        metadata={
+            **deepcopy(state.metadata),
+            "optimized_stage": 2,
+            "objective": (
+                "cup1_normalized_transmission"
+            ),
+        },
+    )
+
+    result.validate()
+
+    return result
+
+
+def _validate_inputs(
+    current_state: MachineState,
+    cup1_reference_state: MachineState,
+    profile: MassProfile,
+    settling_policies: Mapping[
+        str,
+        SettlingPolicy,
+    ],
+) -> None:
+    current_state.validate()
+    cup1_reference_state.validate()
+    profile.validate()
+
+    if current_state.mass_u != profile.mass_u:
+        raise ValueError(
+            "Machine state and mass profile must use the same ion mass"
+        )
+
+    if (
+        cup1_reference_state.mass_u
+        != current_state.mass_u
+    ):
+        raise ValueError(
+            "Cup-1 reference and Cup-2 state must use the same ion mass"
+        )
+
+    if current_state.cup != 2:
+        raise ValueError(
+            "Cup-2 optimization requires cup 2"
+        )
+
+    if current_state.stage not in (
+        None,
+        2,
+    ):
+        raise ValueError(
+            "Cup-2 optimization requires stage 2 or no stage assignment"
+        )
+
+    if cup1_reference_state.cup != 1:
+        raise ValueError(
+            "Saved Cup-1 reference state must select cup 1"
+        )
+
+    for parameter_name in (
+        CUP2_REQUIRED_PARAMETERS
+    ):
+        if (
+            parameter_name
+            not in current_state.parameters
+        ):
+            raise ValueError(
+                f"Cup-2 state is missing {parameter_name}"
+            )
+
+    for parameter_name in (
+        CUP2_FROZEN_CUP1_PARAMETERS
+    ):
+        if (
+            parameter_name
+            not in cup1_reference_state.parameters
+        ):
+            raise ValueError(
+                f"Cup-1 reference state is missing {parameter_name}"
+            )
+
+        current_value = (
+            current_state.parameters[
+                parameter_name
+            ]
+        )
+
+        reference_value = (
+            cup1_reference_state.parameters[
+                parameter_name
+            ]
+        )
+
+        if not _commands_equal(
+            current_value,
+            reference_value,
+        ):
+            raise ValueError(
+                f"{parameter_name} must still match the "
+                "Cup-1 reference command before Cup-2 optimization"
+            )
+
+    optimizable_here = (
+        *CUP2_PRIMARY_PARAMETERS,
+        *CUP2_UPSTREAM_RETUNE_PARAMETERS,
+    )
+
+    for parameter_name in (
+        optimizable_here
+    ):
+        if (
+            parameter_name
+            not in settling_policies
+        ):
+            raise KeyError(
+                f"No settling policy configured for {parameter_name}"
+            )
+
+
+def _assert_frozen_cup1_parameters(
+    state: MachineState,
+    cup1_reference_state: MachineState,
+) -> None:
+    for parameter_name in (
+        CUP2_FROZEN_CUP1_PARAMETERS
+    ):
+        actual = state.parameters[
+            parameter_name
+        ]
+
+        expected = (
+            cup1_reference_state.parameters[
+                parameter_name
+            ]
+        )
+
+        if not _commands_equal(
+            actual,
+            expected,
+        ):
+            raise Cup2OptimizationError(
+                f"{parameter_name} changed during Cup-2 optimization"
+            )
+
+
+def _log_reference_check(
+    logger,
+    result: SourceReferenceCheckResult,
+) -> None:
+    if logger is None:
+        return
+
+    logger.log_state_transition(
+        result.reference_application
+    )
+
+    logger.log_measurement(
+        result.measurement,
+        cup=1,
+        state_id=(
+            result.reference.state_id
+        ),
+        purpose=(
+            "periodic_cup1_source_reference"
+        ),
+    )
+
+    logger.log_reference(
+        result.reference
+    )
+
+    logger.log_state_transition(
+        result.restoration
+    )
+
+
+def _refresh_reference_if_due(
+    adapter,
+    working_state: MachineState,
+    cup1_reference_state: MachineState,
+    tracker: SourceReferenceTracker,
+    settling_policies: Mapping[
+        str,
+        SettlingPolicy,
+    ],
+    measurement_policy: MeasurementPolicy,
+    *,
+    noise_floor_a: float | None,
+    logger,
+    monotonic: Callable[
+        [],
+        float,
+    ],
+    utc_now: Callable[
+        [],
+        str,
+    ],
+    results: list[
+        SourceReferenceCheckResult
+    ],
+) -> MachineState:
+    now = monotonic()
+
+    if not tracker.is_due(
+        now
+    ):
+        return working_state
+
+    check = perform_source_reference_check(
+        adapter,
+        working_state,
+        cup1_reference_state,
+        tracker,
+        settling_policies,
+        measurement_policy,
+        noise_floor_a=noise_floor_a,
+        monotonic=monotonic,
+        utc_now=utc_now,
+    )
+
+    results.append(
+        check
+    )
+
+    _log_reference_check(
+        logger,
+        check,
+    )
+
+    return check.working_state_after
+
+
+def _update_profile(
+    profile: MassProfile,
+    state: MachineState,
+) -> None:
+    """
+    Only Cup-2-primary commands are written into the simple global
+    best_commands mapping.
+
+    The locally retuned einzel value belongs to the complete Cup-2 state,
+    so it is preserved through cup2_best rather than overwriting the
+    Cup-1 einzel starting value.
+    """
+
+    for parameter_name in (
+        CUP2_PRIMARY_PARAMETERS
+    ):
+        profile.set_best_command(
+            parameter_name,
+            state.parameters[
+                parameter_name
+            ],
+        )
+
+    profile.set_best_state(
+        "cup2_best",
+        state.state_id,
+    )
+
+
+def optimize_cup2(
+    adapter,
+    current_state: MachineState,
+    cup1_reference_state: MachineState,
+    profile: MassProfile,
+    tracker: SourceReferenceTracker,
+    settling_policies: Mapping[
+        str,
+        SettlingPolicy,
+    ],
+    measurement_policy: MeasurementPolicy,
+    comparison_policy: ComparisonPolicy,
+    *,
+    optimization_policy: (
+        Cup2OptimizationPolicy | None
+    ) = None,
+    noise_floor_a: float | None = None,
+    logger=None,
+    monotonic: Callable[
+        [],
+        float,
+    ] = time.monotonic,
+    utc_now: Callable[
+        [],
+        str,
+    ] = utc_now_iso,
+) -> Cup2OptimizationResult:
+    """
+    Optimize transport from the saved Cup-1 reference state to Cup 2.
+
+    Objective:
+        T_1->2 = I_2 / I_1,ref
+
+    Frozen throughout Cup 2:
+        sputter
+        extraction
+        analyzing magnet
+
+    Primary controls:
+        lens2
+        steerer X1
+        steerer Y1
+
+    Local upstream correction:
+        einzel lens
+
+    Periodic Cup-1 source checks are inserted whenever the reference
+    tracker says the reference is due.
+    """
+
+    policy = (
+        optimization_policy
+        if optimization_policy is not None
+        else Cup2OptimizationPolicy()
+    )
+
+    _validate_inputs(
+        current_state,
+        cup1_reference_state,
+        profile,
+        settling_policies,
+    )
+
+    working_state = capture_readbacks(
+        adapter,
+        current_state,
+    )
+
+    initial_state = (
+        working_state
+    )
+
+    reference_checks: list[
+        SourceReferenceCheckResult
+    ] = []
+
+    working_state = (
+        _refresh_reference_if_due(
+            adapter,
+            working_state,
+            cup1_reference_state,
+            tracker,
+            settling_policies,
+            measurement_policy,
+            noise_floor_a=(
+                noise_floor_a
+            ),
+            logger=logger,
+            monotonic=monotonic,
+            utc_now=utc_now,
+            results=reference_checks,
+        )
+    )
+
+    _assert_frozen_cup1_parameters(
+        working_state,
+        cup1_reference_state,
+    )
+
+    if tracker.latest is None:
+        raise Cup2OptimizationError(
+            "Cup-2 optimization requires a valid Cup-1 source reference"
+        )
+
+    if logger is not None:
+        logger.log_event(
+            "cup2_optimization_started",
+            {
+                "state_id": (
+                    working_state.state_id
+                ),
+                "cup1_reference_state_id": (
+                    cup1_reference_state.state_id
+                ),
+                "source_reference_state_id": (
+                    tracker.latest.state_id
+                ),
+                "commands": (
+                    working_state.parameters
+                ),
+                "readbacks": (
+                    working_state.readbacks
+                ),
+            },
+        )
+
+    scans: list[
+        TransmissionScanResult
+    ] = []
+
+    scan_definitions = (
+        (
+            "lens2_voltage_v",
+            policy.lens2_half_width_v,
+            policy.lens2_scan,
+        ),
+        (
+            "steerer_x1_v",
+            policy.steerer_half_width_v,
+            policy.steerer_scan,
+        ),
+        (
+            "steerer_y1_v",
+            policy.steerer_half_width_v,
+            policy.steerer_scan,
+        ),
+        (
+            "einzel_lens_voltage_v",
+            policy.einzel_half_width_v,
+            policy.einzel_scan,
+        ),
+    )
+
+    def maintenance_hook(
+        physical_state: MachineState,
+    ) -> MachineState:
+        refreshed = (
+            _refresh_reference_if_due(
+                adapter,
+                physical_state,
+                cup1_reference_state,
+                tracker,
+                settling_policies,
+                measurement_policy,
+                noise_floor_a=(
+                    noise_floor_a
+                ),
+                logger=logger,
+                monotonic=monotonic,
+                utc_now=utc_now,
+                results=(
+                    reference_checks
+                ),
+            )
+        )
+
+        _assert_frozen_cup1_parameters(
+            refreshed,
+            cup1_reference_state,
+        )
+
+        return refreshed
+
+    for pass_index in range(
+        1,
+        policy.coordinate_passes + 1,
+    ):
+        if logger is not None:
+            logger.log_event(
+                "cup2_coordinate_pass_started",
+                {
+                    "pass": (
+                        pass_index
+                    ),
+                    "state_id": (
+                        working_state.state_id
+                    ),
+                    "source_reference_state_id": (
+                        tracker.latest.state_id
+                    ),
+                },
+            )
+
+        for (
+            parameter_name,
+            half_width,
+            scan_policy,
+        ) in scan_definitions:
+            # A long preceding scan might have made the reference due
+            # before the next scan's baseline measurement.
+            working_state = (
+                maintenance_hook(
+                    working_state
+                )
+            )
+
+            center = float(
+                working_state.parameters[
+                    parameter_name
+                ]
+            )
+
+            local_profile = (
+                _local_profile(
+                    profile,
+                    parameter_name,
+                    center,
+                    half_width,
+                )
+            )
+
+            scan = (
+                scan_parameter_transmission_1d(
+                    adapter,
+                    working_state,
+                    local_profile,
+                    tracker,
+                    parameter_name,
+                    scan_policy,
+                    settling_policies,
+                    measurement_policy,
+                    comparison_policy,
+                    noise_floor_a=(
+                        noise_floor_a
+                    ),
+                    logger=logger,
+                    maintenance_hook=(
+                        maintenance_hook
+                    ),
+                )
+            )
+
+            working_state = (
+                scan.final_state
+            )
+
+            scans.append(
+                scan
+            )
+
+            _assert_frozen_cup1_parameters(
+                working_state,
+                cup1_reference_state,
+            )
+
+    # Ensure the final characterization does not use an expired source
+    # reference.
+    working_state = (
+        maintenance_hook(
+            working_state
+        )
+    )
+
+    working_state = (
+        capture_readbacks(
+            adapter,
+            working_state,
+        )
+    )
+
+    _assert_frozen_cup1_parameters(
+        working_state,
+        cup1_reference_state,
+    )
+
+    final_state = (
+        _retag_final_state(
+            working_state
+        )
+    )
+
+    final_measurement = (
+        measure_beam_current(
+            adapter,
+            measurement_policy,
+            noise_floor_a=noise_floor_a,
+        )
+    )
+
+    if (
+        final_measurement.below_noise_floor
+        or final_measurement.mean_a <= 0
+    ):
+        raise Cup2OptimizationNoBeamError(
+            "Final Cup-2 beam current is not a valid transport signal"
+        )
+
+    final_reference = (
+        tracker.latest
+    )
+
+    if final_reference is None:
+        raise Cup2OptimizationError(
+            "Cup-1 reference disappeared during Cup-2 optimization"
+        )
+
+    final_transmission = (
+        transmission_from_reference(
+            2,
+            final_measurement,
+            final_reference,
+        )
+    )
+
+    _update_profile(
+        profile,
+        final_state,
+    )
+
+    if logger is not None:
+        logger.save_state(
+            final_state,
+            "cup2_best",
+        )
+
+        logger.log_measurement(
+            final_measurement,
+            cup=2,
+            state_id=(
+                final_state.state_id
+            ),
+            purpose=(
+                "cup2_final"
+            ),
+        )
+
+        logger.log_transmission(
+            final_transmission
+        )
+
+        logger.log_event(
+            "cup2_optimization_completed",
+            {
+                "state_id": (
+                    final_state.state_id
+                ),
+                "current_a": (
+                    final_measurement.mean_a
+                ),
+                "transmission": (
+                    final_transmission.transmission
+                ),
+                "transmission_percent": (
+                    final_transmission.transmission_percent
+                ),
+                "reference_state_id": (
+                    final_reference.state_id
+                ),
+                "reference_checks": (
+                    len(reference_checks)
+                ),
+                "scan_count": (
+                    len(scans)
+                ),
+                "commands": (
+                    final_state.parameters
+                ),
+                "readbacks": (
+                    final_state.readbacks
+                ),
+            },
+        )
+
+    return Cup2OptimizationResult(
+        initial_state=initial_state,
+        scans=tuple(
+            scans
+        ),
+        reference_checks=tuple(
+            reference_checks
+        ),
+        final_state=final_state,
+        final_measurement=(
+            final_measurement
+        ),
+        final_reference=(
+            final_reference
+        ),
+        final_transmission=(
+            final_transmission
+        ),
+    )
