@@ -2,165 +2,238 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable
+
+from sirius.flavia_adapter import (
+    READBACK_CHANNELS,
+    STEERER_PARAMETERS,
+)
+from sirius.parameters import hardware_steerer_to_sirius
 
 
 @dataclass(frozen=True)
 class SettlingPolicy:
     """
-    Rules for deciding whether a hardware parameter has reached its target.
+    Rules for deciding whether a hardware readback has become stable.
 
-    A parameter is considered settled only after several consecutive
-    readbacks are within the allowed target tolerance.
+    IMPORTANT:
+    Stability is deliberately NOT defined as readback ~= command value.
+
+    FLAVIA hardware can show substantial systematic differences between
+    commanded and measured values. SIRIUS therefore waits for the readback
+    itself to become stable.
     """
 
-    absolute_tolerance: float
-    relative_tolerance: float = 0.0
+    max_readback_span: float
+    relative_readback_span: float = 0.0
+
     timeout_s: float = 10.0
     poll_interval_s: float = 0.1
-    consecutive_samples: int = 3
+    minimum_wait_s: float = 0.2
+
+    window_samples: int = 4
 
     def __post_init__(self) -> None:
-        if self.absolute_tolerance < 0:
-            raise ValueError("absolute_tolerance must be non-negative")
+        if self.max_readback_span < 0:
+            raise ValueError(
+                "max_readback_span must be non-negative"
+            )
 
-        if self.relative_tolerance < 0:
-            raise ValueError("relative_tolerance must be non-negative")
+        if self.relative_readback_span < 0:
+            raise ValueError(
+                "relative_readback_span must be non-negative"
+            )
 
         if self.timeout_s <= 0:
-            raise ValueError("timeout_s must be greater than zero")
+            raise ValueError(
+                "timeout_s must be greater than zero"
+            )
 
-        if self.poll_interval_s < 0:
-            raise ValueError("poll_interval_s must be non-negative")
+        if self.poll_interval_s <= 0:
+            raise ValueError(
+                "poll_interval_s must be greater than zero"
+            )
 
-        if self.consecutive_samples < 1:
-            raise ValueError("consecutive_samples must be at least 1")
+        if self.minimum_wait_s < 0:
+            raise ValueError(
+                "minimum_wait_s must be non-negative"
+            )
 
-    def tolerance_for(self, target: float) -> float:
+        if self.window_samples < 2:
+            raise ValueError(
+                "window_samples must be at least 2"
+            )
+
+    def allowed_span_for(self, mean_readback: float) -> float:
         return max(
-            self.absolute_tolerance,
-            abs(target) * self.relative_tolerance,
+            self.max_readback_span,
+            abs(mean_readback) * self.relative_readback_span,
         )
 
 
 @dataclass(frozen=True)
 class SettlingResult:
     parameter: str
-    target: float
-    final_readback: float
-    tolerance: float
+
+    command_value: float
+    settled_readback: float
+
+    readback_span: float
+    allowed_span: float
+
+    command_readback_delta: float
+
     elapsed_s: float
     samples: int
-    consecutive_samples: int
-
-    @property
-    def final_error(self) -> float:
-        return self.final_readback - self.target
-
-    @property
-    def absolute_final_error(self) -> float:
-        return abs(self.final_error)
+    window_samples: int
 
 
 class SettlingTimeoutError(TimeoutError):
     def __init__(
         self,
         parameter: str,
-        target: float,
+        command_value: float,
         last_readback: float | None,
         elapsed_s: float,
         samples: int,
     ):
         self.parameter = parameter
-        self.target = target
+        self.command_value = command_value
         self.last_readback = last_readback
         self.elapsed_s = elapsed_s
         self.samples = samples
 
         super().__init__(
-            f"{parameter} did not settle at {target} "
-            f"within {elapsed_s:.3f} s; "
+            f"{parameter} did not reach a stable readback "
+            f"after command {command_value} within "
+            f"{elapsed_s:.3f} s; "
             f"last readback={last_readback}"
         )
 
 
-def is_within_tolerance(
-    value: float,
-    target: float,
-    tolerance: float,
-) -> bool:
-    if not math.isfinite(value):
-        return False
+def _convert_readback_to_sirius(
+    parameter: str,
+    raw_value: float,
+) -> float:
+    value = float(raw_value)
 
-    return abs(value - target) <= tolerance
+    if parameter in STEERER_PARAMETERS:
+        value = hardware_steerer_to_sirius(value)
+
+    return value
 
 
-def wait_for_parameter(
+def wait_for_stable_readback(
     adapter,
     parameter: str,
-    target: float,
+    command_value: float,
     policy: SettlingPolicy,
     *,
+    baseline_timestamp: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SettlingResult:
     """
-    Wait until a FLAVIA parameter readback is stably at its target.
+    Wait until the physical readback itself becomes stable.
 
-    A single in-tolerance sample is not sufficient. The parameter must
-    remain within tolerance for policy.consecutive_samples readbacks.
+    The readback is NOT required to equal the commanded value.
+
+    If FLAVIA provides timestamps, repeated polling of the same stale
+    DataModel sample does not count as multiple observations.
     """
 
-    target = float(target)
-    tolerance = policy.tolerance_for(target)
+    if parameter not in READBACK_CHANNELS:
+        raise KeyError(
+            f"No readback channel registered for {parameter}"
+        )
+
+    channel_name = READBACK_CHANNELS[parameter]
 
     start = monotonic()
 
+    window: deque[float] = deque(
+        maxlen=policy.window_samples
+    )
+
     samples = 0
-    consecutive = 0
     last_readback: float | None = None
 
+    last_timestamp = baseline_timestamp
+
     while True:
-        now = monotonic()
-        elapsed = now - start
+        elapsed = monotonic() - start
 
         if elapsed > policy.timeout_s:
             raise SettlingTimeoutError(
                 parameter=parameter,
-                target=target,
+                command_value=command_value,
                 last_readback=last_readback,
                 elapsed_s=elapsed,
                 samples=samples,
             )
 
-        readback = adapter.read_parameter(parameter)
+        if elapsed < policy.minimum_wait_s:
+            sleep(policy.poll_interval_s)
+            continue
 
-        if readback is not None:
-            readback = float(readback)
-            last_readback = readback
-            samples += 1
+        snapshot = adapter.read_channel(channel_name)
 
-            if is_within_tolerance(
-                readback,
-                target,
-                tolerance,
-            ):
-                consecutive += 1
+        if snapshot is not None and snapshot.value is not None:
+            timestamp = snapshot.timestamp
 
-                if consecutive >= policy.consecutive_samples:
-                    return SettlingResult(
-                        parameter=parameter,
-                        target=target,
-                        final_readback=readback,
-                        tolerance=tolerance,
-                        elapsed_s=elapsed,
-                        samples=samples,
-                        consecutive_samples=consecutive,
-                    )
+            is_fresh = (
+                timestamp is None
+                or timestamp != last_timestamp
+            )
 
-            else:
-                consecutive = 0
+            if is_fresh:
+                if timestamp is not None:
+                    last_timestamp = timestamp
+
+                readback = _convert_readback_to_sirius(
+                    parameter,
+                    snapshot.value,
+                )
+
+                if math.isfinite(readback):
+                    last_readback = readback
+                    samples += 1
+                    window.append(readback)
+
+                    if len(window) == policy.window_samples:
+                        values = list(window)
+
+                        mean_readback = (
+                            sum(values) / len(values)
+                        )
+
+                        span = max(values) - min(values)
+
+                        allowed_span = (
+                            policy.allowed_span_for(
+                                mean_readback
+                            )
+                        )
+
+                        if span <= allowed_span:
+                            return SettlingResult(
+                                parameter=parameter,
+                                command_value=float(
+                                    command_value
+                                ),
+                                settled_readback=mean_readback,
+                                readback_span=span,
+                                allowed_span=allowed_span,
+                                command_readback_delta=(
+                                    mean_readback
+                                    - float(command_value)
+                                ),
+                                elapsed_s=elapsed,
+                                samples=samples,
+                                window_samples=len(values),
+                            )
 
         sleep(policy.poll_interval_s)
 
@@ -168,26 +241,37 @@ def wait_for_parameter(
 def set_and_wait(
     adapter,
     parameter: str,
-    target: float,
+    command_value: float,
     policy: SettlingPolicy,
     *,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SettlingResult:
     """
-    Set a SIRIUS parameter through FLAVIA and wait for stable readback.
+    Send a command through FLAVIA and wait until its readback is stable.
     """
+
+    channel_name = READBACK_CHANNELS.get(parameter)
+
+    baseline_timestamp = None
+
+    if channel_name is not None:
+        baseline = adapter.read_channel(channel_name)
+
+        if baseline is not None:
+            baseline_timestamp = baseline.timestamp
 
     adapter.set_parameter(
         parameter,
-        target,
+        command_value,
     )
 
-    return wait_for_parameter(
+    return wait_for_stable_readback(
         adapter,
         parameter,
-        target,
+        command_value,
         policy,
+        baseline_timestamp=baseline_timestamp,
         monotonic=monotonic,
         sleep=sleep,
     )

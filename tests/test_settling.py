@@ -1,12 +1,19 @@
+from dataclasses import dataclass
+
 import pytest
 
 from sirius.settling import (
     SettlingPolicy,
     SettlingTimeoutError,
-    is_within_tolerance,
     set_and_wait,
-    wait_for_parameter,
+    wait_for_stable_readback,
 )
+
+
+@dataclass
+class FakeSnapshot:
+    value: float | None
+    timestamp: float | None
 
 
 class FakeClock:
@@ -21,188 +28,194 @@ class FakeClock:
 
 
 class SequenceAdapter:
-    def __init__(self, values):
-        self.values = list(values)
+    def __init__(self, observations):
+        self.observations = list(observations)
         self.index = 0
         self.set_calls = []
 
-    def set_parameter(self, parameter, target):
+    def set_parameter(self, parameter, value):
         self.set_calls.append(
-            (parameter, target)
+            (parameter, value)
         )
 
-    def read_parameter(self, parameter):
-        if not self.values:
+    def read_channel(self, channel):
+        if not self.observations:
             return None
 
-        if self.index >= len(self.values):
-            return self.values[-1]
+        if self.index >= len(self.observations):
+            return self.observations[-1]
 
-        value = self.values[self.index]
+        result = self.observations[self.index]
         self.index += 1
-        return value
+
+        return result
 
 
-def test_absolute_tolerance():
+def test_large_command_readback_offset_is_allowed():
+    adapter = SequenceAdapter(
+        [
+            FakeSnapshot(17800.0, 1.0),
+            FakeSnapshot(18200.0, 2.0),
+            FakeSnapshot(18500.0, 3.0),
+            FakeSnapshot(18600.0, 4.0),
+            FakeSnapshot(18603.0, 5.0),
+            FakeSnapshot(18601.0, 6.0),
+            FakeSnapshot(18602.0, 7.0),
+        ]
+    )
+
+    clock = FakeClock()
+
+    result = wait_for_stable_readback(
+        adapter,
+        "extraction_voltage_v",
+        19000.0,
+        SettlingPolicy(
+            max_readback_span=5.0,
+            timeout_s=10.0,
+            poll_interval_s=0.1,
+            minimum_wait_s=0.0,
+            window_samples=4,
+        ),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert result.settled_readback == pytest.approx(
+        18601.5
+    )
+
+    assert result.command_value == 19000.0
+
+    assert result.command_readback_delta == pytest.approx(
+        -398.5
+    )
+
+
+def test_moving_readback_is_not_accepted_as_stable():
+    adapter = SequenceAdapter(
+        [
+            FakeSnapshot(18000.0, 1.0),
+            FakeSnapshot(18200.0, 2.0),
+            FakeSnapshot(18400.0, 3.0),
+            FakeSnapshot(18500.0, 4.0),
+            FakeSnapshot(18580.0, 5.0),
+            FakeSnapshot(18600.0, 6.0),
+            FakeSnapshot(18601.0, 7.0),
+            FakeSnapshot(18600.0, 8.0),
+            FakeSnapshot(18602.0, 9.0),
+        ]
+    )
+
+    clock = FakeClock()
+
+    result = wait_for_stable_readback(
+        adapter,
+        "extraction_voltage_v",
+        19000.0,
+        SettlingPolicy(
+            max_readback_span=5.0,
+            timeout_s=10.0,
+            poll_interval_s=0.1,
+            minimum_wait_s=0.0,
+            window_samples=4,
+        ),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert result.samples == 9
+
+
+def test_stale_timestamp_does_not_count_twice():
+    adapter = SequenceAdapter(
+        [
+            FakeSnapshot(18600.0, 1.0),
+            FakeSnapshot(18600.0, 1.0),
+            FakeSnapshot(18600.0, 1.0),
+            FakeSnapshot(18601.0, 2.0),
+            FakeSnapshot(18600.0, 3.0),
+            FakeSnapshot(18602.0, 4.0),
+        ]
+    )
+
+    clock = FakeClock()
+
+    result = wait_for_stable_readback(
+        adapter,
+        "extraction_voltage_v",
+        19000.0,
+        SettlingPolicy(
+            max_readback_span=5.0,
+            timeout_s=10.0,
+            poll_interval_s=0.1,
+            minimum_wait_s=0.0,
+            window_samples=4,
+        ),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert result.samples == 4
+
+
+def test_relative_span_can_define_stability():
     policy = SettlingPolicy(
-        absolute_tolerance=5.0,
+        max_readback_span=1.0,
+        relative_readback_span=0.001,
     )
 
-    assert policy.tolerance_for(1000.0) == 5.0
+    assert policy.allowed_span_for(
+        19000.0
+    ) == 19.0
 
 
-def test_relative_tolerance_can_dominate():
-    policy = SettlingPolicy(
-        absolute_tolerance=1.0,
-        relative_tolerance=0.01,
-    )
+def test_timeout_if_readback_never_stabilizes():
+    observations = []
 
-    assert policy.tolerance_for(1000.0) == 10.0
+    timestamp = 1.0
 
+    for value in (
+        18000.0,
+        18100.0,
+        18200.0,
+        18300.0,
+        18400.0,
+        18500.0,
+    ):
+        observations.append(
+            FakeSnapshot(value, timestamp)
+        )
+        timestamp += 1.0
 
-def test_within_tolerance():
-    assert is_within_tolerance(
-        100.4,
-        100.0,
-        0.5,
-    )
-
-    assert not is_within_tolerance(
-        100.6,
-        100.0,
-        0.5,
-    )
-
-
-def test_parameter_must_be_stable_for_multiple_samples():
-    adapter = SequenceAdapter(
-        [
-            900.0,
-            980.0,
-            999.0,
-            1001.0,
-            1000.5,
-        ]
-    )
-
+    adapter = SequenceAdapter(observations)
     clock = FakeClock()
 
-    result = wait_for_parameter(
-        adapter,
-        "test_parameter",
-        1000.0,
-        SettlingPolicy(
-            absolute_tolerance=2.0,
-            timeout_s=10.0,
-            poll_interval_s=0.1,
-            consecutive_samples=3,
-        ),
-        monotonic=clock.monotonic,
-        sleep=clock.sleep,
-    )
-
-    assert result.final_readback == 1000.5
-    assert result.samples == 5
-    assert result.consecutive_samples == 3
-
-
-def test_out_of_tolerance_sample_resets_stability_counter():
-    adapter = SequenceAdapter(
-        [
-            1000.0,
-            1001.0,
-            1010.0,
-            1000.5,
-            999.5,
-            1000.2,
-        ]
-    )
-
-    clock = FakeClock()
-
-    result = wait_for_parameter(
-        adapter,
-        "test_parameter",
-        1000.0,
-        SettlingPolicy(
-            absolute_tolerance=2.0,
-            timeout_s=10.0,
-            poll_interval_s=0.1,
-            consecutive_samples=3,
-        ),
-        monotonic=clock.monotonic,
-        sleep=clock.sleep,
-    )
-
-    assert result.samples == 6
-
-
-def test_missing_readbacks_do_not_count_as_stable():
-    adapter = SequenceAdapter(
-        [
-            None,
-            None,
-            1000.0,
-            1000.0,
-            1000.0,
-        ]
-    )
-
-    clock = FakeClock()
-
-    result = wait_for_parameter(
-        adapter,
-        "test_parameter",
-        1000.0,
-        SettlingPolicy(
-            absolute_tolerance=1.0,
-            timeout_s=10.0,
-            poll_interval_s=0.1,
-            consecutive_samples=3,
-        ),
-        monotonic=clock.monotonic,
-        sleep=clock.sleep,
-    )
-
-    assert result.samples == 3
-
-
-def test_timeout_if_parameter_never_reaches_target():
-    adapter = SequenceAdapter(
-        [
-            800.0,
-            850.0,
-            900.0,
-        ]
-    )
-
-    clock = FakeClock()
-
-    with pytest.raises(SettlingTimeoutError) as exc:
-        wait_for_parameter(
+    with pytest.raises(SettlingTimeoutError):
+        wait_for_stable_readback(
             adapter,
-            "test_parameter",
-            1000.0,
+            "extraction_voltage_v",
+            19000.0,
             SettlingPolicy(
-                absolute_tolerance=2.0,
-                timeout_s=0.5,
+                max_readback_span=5.0,
+                timeout_s=0.6,
                 poll_interval_s=0.1,
-                consecutive_samples=3,
+                minimum_wait_s=0.0,
+                window_samples=4,
             ),
             monotonic=clock.monotonic,
             sleep=clock.sleep,
         )
 
-    assert exc.value.target == 1000.0
-    assert exc.value.last_readback == 900.0
 
-
-def test_set_and_wait_sets_parameter_before_polling():
+def test_set_and_wait_sends_command():
     adapter = SequenceAdapter(
         [
-            99.0,
-            100.0,
-            100.0,
+            FakeSnapshot(18000.0, 1.0),
+            FakeSnapshot(18600.0, 2.0),
+            FakeSnapshot(18601.0, 3.0),
+            FakeSnapshot(18600.0, 4.0),
+            FakeSnapshot(18602.0, 5.0),
         ]
     )
 
@@ -210,33 +223,36 @@ def test_set_and_wait_sets_parameter_before_polling():
 
     result = set_and_wait(
         adapter,
-        "steerer_x1_v",
-        100.0,
+        "extraction_voltage_v",
+        19000.0,
         SettlingPolicy(
-            absolute_tolerance=1.0,
+            max_readback_span=5.0,
             timeout_s=5.0,
             poll_interval_s=0.1,
-            consecutive_samples=2,
+            minimum_wait_s=0.0,
+            window_samples=4,
         ),
         monotonic=clock.monotonic,
         sleep=clock.sleep,
     )
 
     assert adapter.set_calls == [
-        ("steerer_x1_v", 100.0)
+        ("extraction_voltage_v", 19000.0)
     ]
 
-    assert result.final_readback == 100.0
+    assert result.settled_readback == pytest.approx(
+        18600.75
+    )
 
 
-def test_policy_rejects_invalid_configuration():
+def test_invalid_policy_is_rejected():
     with pytest.raises(ValueError):
         SettlingPolicy(
-            absolute_tolerance=-1.0,
+            max_readback_span=-1.0
         )
 
     with pytest.raises(ValueError):
         SettlingPolicy(
-            absolute_tolerance=1.0,
-            consecutive_samples=0,
+            max_readback_span=1.0,
+            window_samples=1,
         )
