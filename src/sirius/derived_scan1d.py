@@ -5,6 +5,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
+from sirius.coupled_transition import (
+    CoupledTransitionPolicy,
+    apply_coupled_transition,
+)
+
 from sirius.comparison import (
     ComparisonDecision,
     ComparisonPolicy,
@@ -319,6 +324,61 @@ def _candidate_state(
     )
 
 
+def _apply_derived_target(
+    adapter,
+    current: MachineState,
+    target: MachineState,
+    settling_policies: Mapping[
+        str,
+        SettlingPolicy,
+    ],
+    *,
+    coupled_transition_policy: (
+        CoupledTransitionPolicy | None
+    ),
+    logger=None,
+) -> MachineState:
+    """
+    Apply one logical derived-coordinate target.
+
+    Without a coupled policy:
+        use the normal single transition path.
+
+    With a coupled policy:
+        route the affected physical commands through bounded sequential
+        microsteps, settling every physical channel before continuing.
+    """
+
+    if coupled_transition_policy is None:
+        transition = apply_state(
+            adapter,
+            current=current,
+            target=target,
+            settling_policies=(
+                settling_policies
+            ),
+            select_target_cup=False,
+        )
+
+        if logger is not None:
+            logger.log_state_transition(
+                transition
+            )
+
+        return transition.observed_state
+
+    result = apply_coupled_transition(
+        adapter,
+        current,
+        target,
+        settling_policies,
+        coupled_transition_policy,
+        logger=logger,
+    )
+
+    return result.final_state
+
+
 def scan_derived_coordinate_transmission_1d(
     adapter,
     current_state: MachineState,
@@ -340,6 +400,9 @@ def scan_derived_coordinate_transmission_1d(
     ],
     measurement_policy: MeasurementPolicy,
     comparison_policy: ComparisonPolicy,
+    coupled_transition_policy: (
+        CoupledTransitionPolicy | None
+    ) = None,
     noise_floor_a: float | None = None,
     logger=None,
     maintenance_hook: Callable[
@@ -360,8 +423,11 @@ def scan_derived_coordinate_transmission_1d(
             guidefield2_voltage_v
 
     The command builder creates one coherent target MachineState for
-    every coordinate value. apply_state() then performs the actual FLAVIA
-    transitions and readback settling.
+    every coordinate value.
+
+    A normal derived coordinate uses apply_state(). If an explicit
+    CoupledTransitionPolicy is supplied, the logical multi-channel target
+    is instead reached through bounded sequential physical microsteps.
 
     Objective:
         source-normalized transmission T_1->cup
@@ -422,6 +488,26 @@ def scan_derived_coordinate_transmission_1d(
         ):
             raise KeyError(
                 f"No settling policy configured for {parameter_name}"
+            )
+
+    if coupled_transition_policy is not None:
+        expected_parameters = set(
+            affected_parameters
+        )
+
+        transition_parameters = set(
+            coupled_transition_policy.parameter_order
+        )
+
+        if (
+            transition_parameters
+            != expected_parameters
+        ):
+            raise ValueError(
+                "Coupled transition policy must contain exactly the "
+                "derived scan affected parameters: "
+                f"expected={sorted(expected_parameters)}, "
+                f"got={sorted(transition_parameters)}"
             )
 
     minimum = _finite(
@@ -545,6 +631,32 @@ def scan_derived_coordinate_transmission_1d(
                 ),
                 "reference_state_id": (
                     baseline_reference.state_id
+                ),
+                "coupled_transition_enabled": (
+                    coupled_transition_policy
+                    is not None
+                ),
+                "transition_parameter_order": (
+                    None
+                    if coupled_transition_policy
+                    is None
+                    else list(
+                        coupled_transition_policy.parameter_order
+                    )
+                ),
+                "transition_max_steps": (
+                    None
+                    if coupled_transition_policy
+                    is None
+                    else {
+                        name: float(
+                            coupled_transition_policy.max_step_by_parameter[
+                                name
+                            ]
+                        )
+                        for name
+                        in coupled_transition_policy.parameter_order
+                    }
                 ),
             },
         )
@@ -717,18 +829,15 @@ def scan_derived_coordinate_transmission_1d(
                 ),
             )
 
-            transition = apply_state(
+            physical_state = _apply_derived_target(
                 adapter,
-                current=physical_state,
-                target=candidate,
-                settling_policies=(
-                    settling_policies
+                physical_state,
+                candidate,
+                settling_policies,
+                coupled_transition_policy=(
+                    coupled_transition_policy
                 ),
-                select_target_cup=False,
-            )
-
-            physical_state = (
-                transition.observed_state
+                logger=logger,
             )
 
             candidate_measurement = (
@@ -801,10 +910,6 @@ def scan_derived_coordinate_transmission_1d(
                 )
 
             if logger is not None:
-                logger.log_state_transition(
-                    transition
-                )
-
                 logger.log_measurement(
                     candidate_measurement,
                     cup=(
@@ -913,25 +1018,18 @@ def scan_derived_coordinate_transmission_1d(
             step
         )
 
-    final_transition = apply_state(
+    final_state = _apply_derived_target(
         adapter,
-        current=physical_state,
-        target=best_state,
-        settling_policies=(
-            settling_policies
+        physical_state,
+        best_state,
+        settling_policies,
+        coupled_transition_policy=(
+            coupled_transition_policy
         ),
-        select_target_cup=False,
-    )
-
-    final_state = (
-        final_transition.observed_state
+        logger=logger,
     )
 
     if logger is not None:
-        logger.log_state_transition(
-            final_transition
-        )
-
         logger.log_event(
             "derived_scan_completed",
             {

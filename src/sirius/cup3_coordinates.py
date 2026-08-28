@@ -4,6 +4,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
+from sirius.coupled_transition import (
+    CoupledTransitionPolicy,
+)
+
 from sirius.comparison import (
     ComparisonDecision,
     ComparisonPolicy,
@@ -81,6 +85,12 @@ class EndElectrodeCoordinatePolicy:
 
     passes: int = 1
 
+    # Explicit hardware-transition policy for HV1/HV4.
+    #
+    # None keeps offline/unit-test use backward compatible. Real hardware
+    # orchestration should provide a bounded cooler-end transition policy.
+    transition_policy: CoupledTransitionPolicy | None = None
+
     def __post_init__(self) -> None:
         for name, value in (
             (
@@ -108,6 +118,23 @@ class EndElectrodeCoordinatePolicy:
             raise ValueError(
                 "passes must be at least 1"
             )
+
+        if self.transition_policy is not None:
+            expected = {
+                "deceleration_voltage_v",
+                "acceleration_voltage_v",
+            }
+
+            actual = set(
+                self.transition_policy.parameter_order
+            )
+
+            if actual != expected:
+                raise ValueError(
+                    "End-electrode transition policy must contain exactly "
+                    "deceleration_voltage_v and acceleration_voltage_v"
+                )
+
 
 
 @dataclass(frozen=True)
@@ -689,6 +716,9 @@ def optimize_end_electrode_coordinates(
                 comparison_policy=(
                     comparison_policy
                 ),
+                coupled_transition_policy=(
+                    policy.transition_policy
+                ),
                 noise_floor_a=(
                     noise_floor_a
                 ),
@@ -769,6 +799,9 @@ def optimize_end_electrode_coordinates(
                 ),
                 comparison_policy=(
                     comparison_policy
+                ),
+                coupled_transition_policy=(
+                    policy.transition_policy
                 ),
                 noise_floor_a=(
                     noise_floor_a
