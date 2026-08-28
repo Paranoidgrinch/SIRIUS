@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from sirius.cup_ack import (
+    CupSelectionPolicy,
+    select_cup_and_wait,
+)
+
 import math
 from dataclasses import dataclass, replace
 from typing import Mapping
@@ -200,6 +205,7 @@ def apply_state(
     ],
     *,
     select_target_cup: bool = True,
+    cup_selection_policy: CupSelectionPolicy | None = None,
 ) -> AppliedStateResult:
     """
     Apply only command differences between two known SIRIUS states.
@@ -266,11 +272,18 @@ def apply_state(
         select_target_cup
         and target.cup is not None
     ):
-        adapter.select_cup(
-            target.cup
+        cup_result = select_cup_and_wait(
+            select_cup=adapter.select_cup,
+            read_selected_cup=adapter.read_selected_cup,
+            target_cup=target.cup,
+            policy=cup_selection_policy,
         )
 
-        selected_cup = target.cup
+        # selected_cup now means positively acknowledged by FLAVIA,
+        # not merely requested by SIRIUS.
+        selected_cup = (
+            cup_result.confirmed_cup
+        )
 
     observed = capture_readbacks(
         adapter,

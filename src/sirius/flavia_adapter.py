@@ -177,13 +177,16 @@ class FlaviaBackendAdapter:
 
         self.backend.cup.select_cup(cup)
 
-    def read_selected_cup(self) -> int | None:
-        value = self.read_channel_value("cup/selected")
+    def read_selected_cup(self):
+        """
+        Return the raw FLAVIA selected-cup readback.
 
-        if value is None:
-            return None
-
-        return int(value)
+        Validation and normalization are deliberately handled by the
+        SIRIUS cup-acknowledgement layer. This prevents malformed values
+        such as NaN, infinity, or non-integer cup identifiers from being
+        silently coerced here.
+        """
+        return self.read_channel_value("cup/selected")
 
     def read_beam_current_a(self) -> float | None:
         """
