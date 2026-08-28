@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +65,15 @@ class KeithleySnapshot:
     n: int | None
     connected: bool | None
     mode: str | None
+
+
+class KeithleyTimestampError(RuntimeError):
+    """
+    Raised when FLAVIA exposes a Keithley value without a usable source
+    timestamp, so SIRIUS cannot prove measurement freshness.
+    """
+
+    pass
 
 
 class FlaviaBackendAdapter:
@@ -198,6 +208,59 @@ class FlaviaBackendAdapter:
             return None
 
         return float(value)
+
+    def capture_beam_current_freshness_barrier(
+        self,
+    ) -> float | None:
+        """
+        Capture the current FLAVIA source timestamp for the raw Keithley
+        current channel.
+
+        A later SIRIUS beam-current measurement must only accept samples
+        with a strictly greater source timestamp.
+
+        None is returned only when no Keithley channel state exists yet.
+        If FLAVIA already exposes a current value but provides no usable
+        timestamp, freshness cannot be proven and the operation fails.
+        """
+        snapshot = self.read_channel(
+            "keithley/current_A"
+        )
+
+        if snapshot is None:
+            return None
+
+        if snapshot.timestamp is None:
+            if snapshot.value is None:
+                return None
+
+            raise KeithleyTimestampError(
+                "Keithley current exists without a FLAVIA source timestamp"
+            )
+
+        try:
+            timestamp = float(
+                snapshot.timestamp
+            )
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            raise KeithleyTimestampError(
+                "Invalid Keithley source timestamp: "
+                f"{snapshot.timestamp!r}"
+            ) from exc
+
+        if not math.isfinite(
+            timestamp
+        ):
+            raise KeithleyTimestampError(
+                "Invalid Keithley source timestamp: "
+                f"{snapshot.timestamp!r}"
+            )
+
+        return timestamp
 
     def read_keithley_snapshot(self) -> KeithleySnapshot:
         """

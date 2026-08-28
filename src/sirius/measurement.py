@@ -124,6 +124,10 @@ class BeamMeasurementNoDataError(BeamMeasurementError):
     pass
 
 
+class BeamMeasurementFreshnessError(BeamMeasurementError):
+    pass
+
+
 def _statistics(
     samples: list[BeamCurrentSample],
 ) -> tuple[float, float, float]:
@@ -244,30 +248,78 @@ def measure_beam_current(
     policy: MeasurementPolicy,
     *,
     noise_floor_a: float | None = None,
+    not_before_source_timestamp: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> BeamMeasurement:
     """
     Adaptively measure the beam-current magnitude from FLAVIA.
 
-    Only fresh DataModel samples are accepted when source timestamps are
-    available.
+    On the real FLAVIA adapter, every measurement first captures the
+    currently cached Keithley source timestamp. Only samples carrying a
+    strictly newer timestamp are then accepted.
 
-    Measurement stops when one of the following occurs:
+    This establishes the ordering:
 
-    - requested precision is reached and the recent signal is stable
-    - signal is conservatively below a supplied noise floor
-    - maximum number of fresh samples is reached
-    - maximum measurement duration is reached
+        completed hardware/cup transition
+        -> measurement starts
+        -> freshness barrier captured
+        -> strictly newer Keithley samples only
 
-    If no fresh current sample is received before max_duration_s,
-    BeamMeasurementNoDataError is raised.
+    Source timestamps are also required to increase strictly within the
+    measurement, preventing duplicates and out-of-order samples from
+    being counted.
+
+    Generic test/legacy adapters without the FLAVIA freshness capability
+    retain the previous timestamp-deduplication behaviour.
     """
 
     if noise_floor_a is not None and noise_floor_a < 0:
         raise ValueError(
             "noise_floor_a must be non-negative"
         )
+
+    freshness_barrier: float | None = None
+    strict_freshness = False
+
+    if not_before_source_timestamp is not None:
+        try:
+            freshness_barrier = float(
+                not_before_source_timestamp
+            )
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            raise ValueError(
+                "not_before_source_timestamp must be finite"
+            ) from exc
+
+        if not math.isfinite(
+            freshness_barrier
+        ):
+            raise ValueError(
+                "not_before_source_timestamp must be finite"
+            )
+
+        strict_freshness = True
+
+    else:
+        capture_barrier = getattr(
+            adapter,
+            "capture_beam_current_freshness_barrier",
+            None,
+        )
+
+        if callable(
+            capture_barrier
+        ):
+            freshness_barrier = (
+                capture_barrier()
+            )
+
+            strict_freshness = True
 
     start = monotonic()
 
@@ -281,6 +333,11 @@ def measure_beam_current(
 
         if elapsed >= policy.max_duration_s:
             if not samples:
+                if strict_freshness:
+                    raise BeamMeasurementNoDataError(
+                        "No post-barrier Keithley current sample received"
+                    )
+
                 raise BeamMeasurementNoDataError(
                     "No fresh Keithley current sample received"
                 )
@@ -298,24 +355,89 @@ def measure_beam_current(
         )
 
         if snapshot is not None and snapshot.value is not None:
-            source_timestamp = snapshot.timestamp
-
-            is_fresh = (
-                source_timestamp is None
-                or source_timestamp != last_source_timestamp
+            raw_source_timestamp = (
+                snapshot.timestamp
             )
+
+            source_timestamp: (
+                float | None
+            ) = None
+
+            if raw_source_timestamp is not None:
+                try:
+                    source_timestamp = float(
+                        raw_source_timestamp
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                    OverflowError,
+                ) as exc:
+                    raise BeamMeasurementFreshnessError(
+                        "Invalid Keithley source timestamp: "
+                        f"{raw_source_timestamp!r}"
+                    ) from exc
+
+                if not math.isfinite(
+                    source_timestamp
+                ):
+                    raise BeamMeasurementFreshnessError(
+                        "Invalid Keithley source timestamp: "
+                        f"{raw_source_timestamp!r}"
+                    )
+
+            elif strict_freshness:
+                raise BeamMeasurementFreshnessError(
+                    "Keithley current sample has no FLAVIA source timestamp; "
+                    "post-transition freshness cannot be proven"
+                )
+
+            if strict_freshness:
+                is_after_barrier = (
+                    freshness_barrier is None
+                    or source_timestamp
+                    > freshness_barrier
+                )
+
+                is_newer_than_last = (
+                    last_source_timestamp is None
+                    or source_timestamp
+                    > last_source_timestamp
+                )
+
+                is_fresh = (
+                    is_after_barrier
+                    and is_newer_than_last
+                )
+
+            else:
+                is_fresh = (
+                    source_timestamp is None
+                    or source_timestamp
+                    != last_source_timestamp
+                )
 
             if is_fresh:
                 if source_timestamp is not None:
-                    last_source_timestamp = source_timestamp
+                    last_source_timestamp = (
+                        source_timestamp
+                    )
 
-                current_a = abs(float(snapshot.value))
+                current_a = abs(
+                    float(
+                        snapshot.value
+                    )
+                )
 
-                if math.isfinite(current_a):
+                if math.isfinite(
+                    current_a
+                ):
                     samples.append(
                         BeamCurrentSample(
                             current_a=current_a,
-                            source_timestamp=source_timestamp,
+                            source_timestamp=(
+                                source_timestamp
+                            ),
                             elapsed_s=elapsed,
                         )
                     )
@@ -330,8 +452,10 @@ def measure_beam_current(
                         )
 
                     enough_data = (
-                        len(samples) >= policy.min_samples
-                        and elapsed >= policy.min_duration_s
+                        len(samples)
+                        >= policy.min_samples
+                        and elapsed
+                        >= policy.min_duration_s
                     )
 
                     if enough_data:
@@ -386,4 +510,7 @@ def measure_beam_current(
                                 below_noise_floor=False,
                             )
 
-        sleep(policy.poll_interval_s)
+        sleep(
+            policy.poll_interval_s
+        )
+
