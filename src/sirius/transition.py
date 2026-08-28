@@ -272,11 +272,34 @@ def apply_state(
         select_target_cup
         and target.cup is not None
     ):
+        effective_cup_policy = (
+            cup_selection_policy
+        )
+
+        if effective_cup_policy is None:
+            effective_cup_policy = getattr(
+                adapter,
+                "cup_selection_policy",
+                None,
+            )
+
+        if (
+            effective_cup_policy is not None
+            and not isinstance(
+                effective_cup_policy,
+                CupSelectionPolicy,
+            )
+        ):
+            raise TypeError(
+                "Adapter cup_selection_policy must be "
+                "a CupSelectionPolicy"
+            )
+
         cup_result = select_cup_and_wait(
             select_cup=adapter.select_cup,
             read_selected_cup=adapter.read_selected_cup,
             target_cup=target.cup,
-            policy=cup_selection_policy,
+            policy=effective_cup_policy,
         )
 
         # selected_cup now means positively acknowledged by FLAVIA,

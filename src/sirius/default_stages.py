@@ -139,6 +139,27 @@ STAGE_FUNCTION_SPECS = {
 }
 
 
+REFERENCE_STAGE_PARAMETERS = {
+    "cup1_reference_state":
+        SiriusStage.CUP1,
+
+    "cup2_reference_state":
+        SiriusStage.CUP2,
+
+    "cup3_reference_state":
+        SiriusStage.CUP3,
+
+    "cup4_reference_state":
+        SiriusStage.CUP4,
+
+    "cup5_reference_state":
+        SiriusStage.CUP5,
+
+    "cup6_reference_state":
+        SiriusStage.CUP6,
+}
+
+
 @dataclass(frozen=True)
 class DefaultStageResources:
     """
@@ -536,6 +557,30 @@ def _automatic_value(
             state,
         )
 
+    if name in REFERENCE_STAGE_PARAMETERS:
+        reference_stage = (
+            REFERENCE_STAGE_PARAMETERS[
+                name
+            ]
+        )
+
+        try:
+            reference_state = (
+                context.completed_state(
+                    reference_stage
+                )
+            )
+        except KeyError as exc:
+            raise DefaultStageWiringError(
+                f"{name} requested before "
+                f"{reference_stage.value} was completed"
+            ) from exc
+
+        return (
+            True,
+            reference_state,
+        )
+
     if name in (
         "logger",
         "run_logger",
@@ -842,7 +887,9 @@ def inspect_default_stage_requirements(
         "run_context",
         "hardware_safety",
         "cup_selection_policy",
-    }
+    } | set(
+        REFERENCE_STAGE_PARAMETERS
+    )
 
     for stage in (
         STAGE_FUNCTION_SPECS

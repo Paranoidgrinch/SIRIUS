@@ -4,6 +4,10 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from sirius.cup_ack import (
+    CupSelectionPolicy,
+)
+
 from sirius.parameters import (
     PARAMETERS,
     hardware_steerer_to_sirius,
@@ -87,6 +91,26 @@ class FlaviaBackendAdapter:
 
     def __init__(self, backend: Any):
         self.backend = backend
+
+        self.cup_selection_policy: (
+            CupSelectionPolicy | None
+        ) = None
+
+    def set_cup_selection_policy(
+        self,
+        policy: CupSelectionPolicy,
+    ) -> None:
+        if not isinstance(
+            policy,
+            CupSelectionPolicy,
+        ):
+            raise TypeError(
+                "policy must be a CupSelectionPolicy"
+            )
+
+        self.cup_selection_policy = (
+            policy
+        )
 
     def read_channel(self, channel_name: str) -> ChannelSnapshot | None:
         channel = self.backend.model.get(channel_name)

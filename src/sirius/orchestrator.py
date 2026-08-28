@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
     Any,
@@ -68,7 +68,7 @@ class SiriusRunError(RuntimeError):
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class SiriusRunContext:
     """
     Shared context passed to every stage runner.
@@ -82,6 +82,35 @@ class SiriusRunContext:
     adapter: Any
 
     logger: Any = None
+
+    completed_states: dict[
+        SiriusStage,
+        MachineState,
+    ] = field(
+        default_factory=dict
+    )
+
+    def record_completed_state(
+        self,
+        stage: SiriusStage,
+        state: MachineState,
+    ) -> None:
+        self.completed_states[
+            stage
+        ] = state
+
+    def completed_state(
+        self,
+        stage: SiriusStage,
+    ) -> MachineState:
+        try:
+            return self.completed_states[
+                stage
+            ]
+        except KeyError as exc:
+            raise KeyError(
+                f"No completed state recorded for {stage.value}"
+            ) from exc
 
     @property
     def hardware_safety(
@@ -430,6 +459,11 @@ def _run_one_stage(
             final_state,
             stage=stage,
             config=context.config,
+        )
+
+        context.record_completed_state(
+            stage,
+            final_state,
         )
 
     except Exception as exc:
