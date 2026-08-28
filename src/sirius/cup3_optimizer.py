@@ -7,6 +7,13 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable, Mapping
 
 from sirius.comparison import ComparisonPolicy
+from sirius.cup3_coordinates import (
+    EndElectrodeCoordinatePolicy,
+    GuidefieldCoordinatePolicy,
+    optimize_end_electrode_coordinates,
+    optimize_guidefield_coordinates,
+)
+from sirius.derived_scan1d import DerivedScanResult
 from sirius.cooler_electrodes import (
     evaluate_cooler_end_electrodes,
 )
@@ -104,10 +111,10 @@ class Cup3OptimizationNoBeamError(
 @dataclass(frozen=True)
 class Cup3OptimizationPolicy:
     """
-    Conservative first-pass Cup-3 optimization policy.
+    Conservative Cup-3 optimization policy.
 
-    All values are initial operational defaults, not learned machine
-    constants.
+    HV1/HV4 and GF1/GF2 are optimized in derived differential/common
+    coordinates rather than as independent supplies.
     """
 
     residual_scan: ResidualEnergyScanPolicy = field(
@@ -131,38 +138,19 @@ class Cup3OptimizationPolicy:
         0.25,
     )
 
-    deceleration_half_width_v: float = 1000.0
-
-    deceleration_scan: ScanPolicy = field(
-        default_factory=lambda: ScanPolicy(
-            steps=(
-                250.0,
-                50.0,
-            )
+    end_electrode_policy: (
+        EndElectrodeCoordinatePolicy
+    ) = field(
+        default_factory=(
+            EndElectrodeCoordinatePolicy
         )
     )
 
-    acceleration_half_width_v: float = 1000.0
-
-    acceleration_scan: ScanPolicy = field(
-        default_factory=lambda: ScanPolicy(
-            steps=(
-                250.0,
-                50.0,
-            )
-        )
-    )
-
-    guidefield1_half_width_v: float = 8.0
-
-    guidefield2_half_width_v: float = 12.0
-
-    guidefield_scan: ScanPolicy = field(
-        default_factory=lambda: ScanPolicy(
-            steps=(
-                2.0,
-                0.5,
-            )
+    guidefield_policy: (
+        GuidefieldCoordinatePolicy
+    ) = field(
+        default_factory=(
+            GuidefieldCoordinatePolicy
         )
     )
 
@@ -199,31 +187,18 @@ class Cup3OptimizationPolicy:
         )
     )
 
-    electrode_passes: int = 1
-    guidefield_passes: int = 1
     upstream_passes: int = 1
+
+    # Compatibility overrides for existing callers/tests.
+    # None means: use the pass count stored in the nested policy.
+    electrode_passes: int | None = None
+    guidefield_passes: int | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
             (
                 "final_residual_half_width_ev",
                 self.final_residual_half_width_ev,
-            ),
-            (
-                "deceleration_half_width_v",
-                self.deceleration_half_width_v,
-            ),
-            (
-                "acceleration_half_width_v",
-                self.acceleration_half_width_v,
-            ),
-            (
-                "guidefield1_half_width_v",
-                self.guidefield1_half_width_v,
-            ),
-            (
-                "guidefield2_half_width_v",
-                self.guidefield2_half_width_v,
             ),
             (
                 "einzel_half_width_v",
@@ -255,6 +230,14 @@ class Cup3OptimizationPolicy:
                 "final_residual_steps_ev must not be empty"
             )
 
+        for step in self.final_residual_steps_ev:
+            if not math.isfinite(
+                float(step)
+            ) or step <= 0:
+                raise ValueError(
+                    "Final residual-energy steps must be positive and finite"
+                )
+
         for previous, current in zip(
             self.final_residual_steps_ev,
             self.final_residual_steps_ev[1:],
@@ -263,6 +246,11 @@ class Cup3OptimizationPolicy:
                 raise ValueError(
                     "Final residual-energy steps must decrease"
                 )
+
+        if self.upstream_passes < 1:
+            raise ValueError(
+                "upstream_passes must be at least 1"
+            )
 
         for name, value in (
             (
@@ -273,14 +261,13 @@ class Cup3OptimizationPolicy:
                 "guidefield_passes",
                 self.guidefield_passes,
             ),
-            (
-                "upstream_passes",
-                self.upstream_passes,
-            ),
         ):
-            if value < 1:
+            if (
+                value is not None
+                and value < 1
+            ):
                 raise ValueError(
-                    f"{name} must be at least 1"
+                    f"{name} must be at least 1 when supplied"
                 )
 
 
@@ -294,12 +281,12 @@ class Cup3OptimizationResult:
     residual_scan: ResidualEnergyScanResult
 
     electrode_scans: tuple[
-        TransmissionScanResult,
+        DerivedScanResult,
         ...
     ]
 
     guidefield_scans: tuple[
-        TransmissionScanResult,
+        DerivedScanResult,
         ...
     ]
 
@@ -1020,164 +1007,113 @@ def optimize_cup3(
 
         # ----------------------------------------------------------
         # Phase D: entrance / exit electrodes.
+        #
+        # Optimize differential and common coordinates instead of
+        # independently scanning HV1 and HV4.
         # ----------------------------------------------------------
 
-        electrode_scans: list[
-            TransmissionScanResult
-        ] = []
-
-        electrode_definitions = (
-            (
-                "deceleration_voltage_v",
-                policy.deceleration_half_width_v,
-                policy.deceleration_scan,
-            ),
-            (
-                "acceleration_voltage_v",
-                policy.acceleration_half_width_v,
-                policy.acceleration_scan,
-            ),
+        end_policy = (
+            policy.end_electrode_policy
         )
 
-        for _ in range(
+        if (
             policy.electrode_passes
+            is not None
         ):
-            for (
-                parameter_name,
-                half_width,
-                scan_policy,
-            ) in electrode_definitions:
-                working_state = (
-                    maintenance_hook(
-                        working_state
-                    )
-                )
+            end_policy = replace(
+                end_policy,
+                passes=(
+                    policy.electrode_passes
+                ),
+            )
 
-                local_profile = (
-                    _local_profile(
-                        profile,
-                        parameter_name,
-                        working_state.parameters[
-                            parameter_name
-                        ],
-                        half_width,
-                    )
-                )
+        electrode_phase = (
+            optimize_end_electrode_coordinates(
+                adapter,
+                working_state,
+                tracker,
+                settling_policies,
+                measurement_policy,
+                comparison_policy,
+                policy=end_policy,
+                noise_floor_a=(
+                    noise_floor_a
+                ),
+                logger=logger,
+                maintenance_hook=(
+                    maintenance_hook
+                ),
+            )
+        )
 
-                scan = (
-                    scan_parameter_transmission_1d(
-                        adapter,
-                        working_state,
-                        local_profile,
-                        tracker,
-                        parameter_name,
-                        scan_policy,
-                        settling_policies,
-                        measurement_policy,
-                        comparison_policy,
-                        noise_floor_a=(
-                            noise_floor_a
-                        ),
-                        logger=logger,
-                        maintenance_hook=(
-                            maintenance_hook
-                        ),
-                    )
-                )
+        working_state = (
+            electrode_phase.final_state
+        )
 
-                working_state = (
-                    scan.final_state
-                )
+        electrode_scans = list(
+            electrode_phase.scans
+        )
 
-                electrode_scans.append(
-                    scan
-                )
-
-                _assert_source_frozen(
-                    working_state,
-                    cup1_reference_state,
-                )
+        _assert_source_frozen(
+            working_state,
+            cup1_reference_state,
+        )
 
         # ----------------------------------------------------------
         # Phase E: guidefields.
         #
-        # First-generation implementation optimizes the two physical
-        # supplies independently. Difference/common-mode coordinates
-        # remain logged and can later replace this with a paired scan.
+        # Optimize GF1-GF2 first, then common mode. If direction is
+        # unknown, both difference signs are probed where hardware
+        # limits allow and the MassProfile may learn forward_sign.
         # ----------------------------------------------------------
 
-        guidefield_scans: list[
-            TransmissionScanResult
-        ] = []
-
-        guidefield_definitions = (
-            (
-                "guidefield1_voltage_v",
-                policy.guidefield1_half_width_v,
-            ),
-            (
-                "guidefield2_voltage_v",
-                policy.guidefield2_half_width_v,
-            ),
+        guide_policy = (
+            policy.guidefield_policy
         )
 
-        for _ in range(
+        if (
             policy.guidefield_passes
+            is not None
         ):
-            for (
-                parameter_name,
-                half_width,
-            ) in guidefield_definitions:
-                working_state = (
-                    maintenance_hook(
-                        working_state
-                    )
-                )
+            guide_policy = replace(
+                guide_policy,
+                passes=(
+                    policy.guidefield_passes
+                ),
+            )
 
-                local_profile = (
-                    _local_profile(
-                        profile,
-                        parameter_name,
-                        working_state.parameters[
-                            parameter_name
-                        ],
-                        half_width,
-                    )
-                )
+        guidefield_phase = (
+            optimize_guidefield_coordinates(
+                adapter,
+                working_state,
+                profile,
+                tracker,
+                settling_policies,
+                measurement_policy,
+                comparison_policy,
+                policy=guide_policy,
+                noise_floor_a=(
+                    noise_floor_a
+                ),
+                logger=logger,
+                maintenance_hook=(
+                    maintenance_hook
+                ),
+            )
+        )
 
-                scan = (
-                    scan_parameter_transmission_1d(
-                        adapter,
-                        working_state,
-                        local_profile,
-                        tracker,
-                        parameter_name,
-                        policy.guidefield_scan,
-                        settling_policies,
-                        measurement_policy,
-                        comparison_policy,
-                        noise_floor_a=(
-                            noise_floor_a
-                        ),
-                        logger=logger,
-                        maintenance_hook=(
-                            maintenance_hook
-                        ),
-                    )
-                )
+        working_state = (
+            guidefield_phase.final_state
+        )
 
-                working_state = (
-                    scan.final_state
-                )
+        guidefield_scans = list(
+            guidefield_phase.scans
+        )
 
-                guidefield_scans.append(
-                    scan
-                )
-
-                _assert_source_frozen(
-                    working_state,
-                    cup1_reference_state,
-                )
+        _assert_source_frozen(
+            working_state,
+            cup1_reference_state,
+        )
 
         # ----------------------------------------------------------
         # Phase F: small upstream retunes.

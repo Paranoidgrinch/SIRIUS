@@ -290,6 +290,49 @@ def patch_common(
         fake_residual,
     )
 
+    def fake_end_coordinates(
+        adapter,
+        current_state,
+        *args,
+        **kwargs,
+    ):
+        phase_calls.append(
+            "end_coordinates"
+        )
+
+        return SimpleNamespace(
+            final_state=current_state,
+            scans=(),
+        )
+
+    monkeypatch.setattr(
+        module,
+        "optimize_end_electrode_coordinates",
+        fake_end_coordinates,
+    )
+
+    def fake_guide_coordinates(
+        adapter,
+        current_state,
+        *args,
+        **kwargs,
+    ):
+        phase_calls.append(
+            "guidefield_coordinates"
+        )
+
+        return SimpleNamespace(
+            final_state=current_state,
+            scans=(),
+            direction_evidence=(),
+        )
+
+    monkeypatch.setattr(
+        module,
+        "optimize_guidefield_coordinates",
+        fake_guide_coordinates,
+    )
+
     def fake_scan(
         adapter,
         current_state,
@@ -411,11 +454,8 @@ def test_optimizer_phase_order(
         "q_1",
         "residual_1",
 
-        "deceleration_voltage_v",
-        "acceleration_voltage_v",
-
-        "guidefield1_voltage_v",
-        "guidefield2_voltage_v",
+        "end_coordinates",
+        "guidefield_coordinates",
 
         "einzel_lens_voltage_v",
         "lens2_voltage_v",
