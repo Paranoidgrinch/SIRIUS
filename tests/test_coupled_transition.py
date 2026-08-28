@@ -578,3 +578,74 @@ def test_invalid_max_step_is_rejected():
         module.cooler_end_transition_policy(
             max_step_v=0.0
         )
+
+def test_final_state_restores_requested_target_semantics(
+    monkeypatch,
+):
+    current = qpt_state(
+        2000.0,
+        3000.0,
+        2000.0,
+    )
+
+    target = MachineState(
+        mass_u=60.0,
+        cup=4,
+        stage=4,
+        role="scan_candidate",
+        parameters={
+            "quadrupole1_voltage_v": 1800.0,
+            "quadrupole2_voltage_v": 3000.0,
+            "quadrupole3_voltage_v": 2200.0,
+        },
+        metadata={
+            "scan_coordinate": "qpt_focus_asymmetry_2d",
+            "important": 42,
+        },
+    )
+
+    def fake_apply(
+        adapter,
+        current,
+        target,
+        settling_policies,
+        select_target_cup=False,
+    ):
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply,
+    )
+
+    result = module.apply_coupled_transition(
+        object(),
+        current,
+        target,
+        settling(
+            "quadrupole1_voltage_v",
+            "quadrupole2_voltage_v",
+            "quadrupole3_voltage_v",
+        ),
+        module.qpt_transition_policy(
+            max_step_v=100.0
+        ),
+    )
+
+    assert (
+        result.final_state.role
+        == "scan_candidate"
+    )
+
+    assert (
+        result.final_state.metadata
+        == target.metadata
+    )
+
+    assert (
+        result.final_state.parameters
+        == target.parameters
+    )

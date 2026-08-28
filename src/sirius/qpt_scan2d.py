@@ -5,6 +5,11 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
+from sirius.coupled_transition import (
+    CoupledTransitionPolicy,
+    apply_coupled_transition,
+)
+
 from sirius.comparison import (
     ComparisonDecision,
     ComparisonPolicy,
@@ -112,6 +117,11 @@ class QPT2DScanPolicy:
 
     max_points_per_level: int = 500
 
+    # None keeps the scanner usable in offline/unit-test contexts.
+    # Real hardware orchestration should provide an explicit bounded
+    # QPT coupled-transition policy.
+    transition_policy: CoupledTransitionPolicy | None = None
+
     def __post_init__(self) -> None:
         for name, value in (
             (
@@ -168,6 +178,17 @@ class QPT2DScanPolicy:
             raise ValueError(
                 "max_points_per_level must be at least 1"
             )
+
+        if self.transition_policy is not None:
+            if set(
+                self.transition_policy.parameter_order
+            ) != set(
+                QPT_PARAMETERS
+            ):
+                raise ValueError(
+                    "QPT transition policy must contain exactly "
+                    "QPT1, QPT2, and QPT3"
+                )
 
 
 @dataclass(frozen=True)
@@ -695,6 +716,58 @@ def _validate_inputs(
     )
 
 
+def _apply_qpt_target(
+    adapter,
+    current: MachineState,
+    target: MachineState,
+    scan_policy: QPT2DScanPolicy,
+    settling_policies: Mapping[
+        str,
+        SettlingPolicy,
+    ],
+    *,
+    logger=None,
+) -> MachineState:
+    """
+    Apply one logical QPT target.
+
+    Offline/backward-compatible mode:
+        normal apply_state()
+
+    Hardware-safe mode:
+        bounded coupled transition with sequential settled microsteps.
+    """
+
+    if scan_policy.transition_policy is None:
+        transition = apply_state(
+            adapter,
+            current=current,
+            target=target,
+            settling_policies=(
+                settling_policies
+            ),
+            select_target_cup=False,
+        )
+
+        if logger is not None:
+            logger.log_state_transition(
+                transition
+            )
+
+        return transition.observed_state
+
+    result = apply_coupled_transition(
+        adapter,
+        current,
+        target,
+        settling_policies,
+        scan_policy.transition_policy,
+        logger=logger,
+    )
+
+    return result.final_state
+
+
 def scan_qpt_focus_asymmetry_2d(
     adapter,
     current_state: MachineState,
@@ -1083,18 +1156,13 @@ def scan_qpt_focus_asymmetry_2d(
                 ),
             )
 
-            transition = apply_state(
+            physical_state = _apply_qpt_target(
                 adapter,
-                current=physical_state,
-                target=candidate,
-                settling_policies=(
-                    settling_policies
-                ),
-                select_target_cup=False,
-            )
-
-            physical_state = (
-                transition.observed_state
+                physical_state,
+                candidate,
+                scan_policy,
+                settling_policies,
+                logger=logger,
             )
 
             observed_qpt = evaluate_qpt(
@@ -1199,10 +1267,6 @@ def scan_qpt_focus_asymmetry_2d(
                 )
 
             if logger is not None:
-                logger.log_state_transition(
-                    transition
-                )
-
                 logger.log_measurement(
                     candidate_measurement,
                     cup=4,
@@ -1339,18 +1403,13 @@ def scan_qpt_focus_asymmetry_2d(
         )
 
     # Restore the physically best tested state.
-    final_transition = apply_state(
+    final_state = _apply_qpt_target(
         adapter,
-        current=physical_state,
-        target=best_state,
-        settling_policies=(
-            settling_policies
-        ),
-        select_target_cup=False,
-    )
-
-    final_state = (
-        final_transition.observed_state
+        physical_state,
+        best_state,
+        scan_policy,
+        settling_policies,
+        logger=logger,
     )
 
     final_qpt = evaluate_qpt(
@@ -1368,10 +1427,6 @@ def scan_qpt_focus_asymmetry_2d(
         )
 
     if logger is not None:
-        logger.log_state_transition(
-            final_transition
-        )
-
         logger.log_event(
             "qpt_2d_scan_completed",
             {

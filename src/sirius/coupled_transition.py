@@ -661,6 +661,44 @@ def _assert_macro_target_reached(
             )
 
 
+def _finalize_observed_target_state(
+    observed: MachineState,
+    target: MachineState,
+) -> MachineState:
+    """
+    Preserve the physical readbacks reached by the coupled executor while
+    restoring the semantic identity of the originally requested target.
+
+    Internal micro-step metadata must not leak out as the final scan state.
+    """
+
+    result = MachineState(
+        mass_u=target.mass_u,
+        parameters=dict(
+            target.parameters
+        ),
+        readbacks=dict(
+            observed.readbacks
+        ),
+        cup=target.cup,
+        stage=target.stage,
+        role=target.role,
+        rfq=deepcopy(
+            target.rfq
+        ),
+        fixed_conditions=deepcopy(
+            target.fixed_conditions
+        ),
+        metadata=deepcopy(
+            target.metadata
+        ),
+    )
+
+    result.validate()
+
+    return result
+
+
 def apply_coupled_transition(
     adapter,
     current: MachineState,
@@ -851,6 +889,11 @@ def apply_coupled_transition(
                 ),
             )
 
+    final_state = _finalize_observed_target_state(
+        physical_state,
+        target,
+    )
+
     if logger is not None:
         logger.log_event(
             "coupled_transition_completed",
@@ -862,7 +905,7 @@ def apply_coupled_transition(
                     target.state_id
                 ),
                 "final_state_id": (
-                    physical_state.state_id
+                    final_state.state_id
                 ),
                 "parameters": list(
                     policy.parameter_order
@@ -885,7 +928,7 @@ def apply_coupled_transition(
             channel_steps
         ),
         final_state=(
-            physical_state
+            final_state
         ),
     )
 
