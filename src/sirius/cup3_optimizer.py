@@ -45,7 +45,7 @@ from sirius.residual_energy_scan import (
     ResidualEnergyScanResult,
     scan_residual_energy,
 )
-from sirius.rfq_matching import (
+from sirius.rfq_matching_safe import (
     LCSetting,
     RFQMatchingPolicy,
     RFQMatchingResult,

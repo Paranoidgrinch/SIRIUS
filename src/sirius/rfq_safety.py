@@ -388,6 +388,11 @@ class RFQSafetyController:
         Any non-bool/non-None readback fails closed.
         """
 
+        fault_was_latched = (
+            self.state
+            == RFQSafetyState.FAULT_LATCHED
+        )
+
         self.hardware.request_rf_off()
 
         start = float(
@@ -479,10 +484,11 @@ class RFQSafetyController:
                 >= self.policy
                 .off_consecutive_confirmations
             ):
-                self.state = (
-                    RFQSafetyState
-                    .RF_OFF_CONFIRMED
-                )
+                if not fault_was_latched:
+                    self.state = (
+                        RFQSafetyState
+                        .RF_OFF_CONFIRMED
+                    )
 
                 self.last_measured_q = (
                     None
@@ -566,6 +572,85 @@ class RFQSafetyController:
             RFQSafetyState.CONFIGURED_OFF
         )
 
+    def execute_configuration_change(
+        self,
+        executor: Callable[
+            [],
+            None,
+        ],
+    ) -> None:
+        """
+        Execute one RFQ configuration change only after RF OFF has been
+        positively confirmed.
+
+        This deliberately does not know whether the change is frequency,
+        inductance, capacitance or another matching-network operation.
+        """
+
+        self._require_not_faulted()
+
+        self.confirm_rf_off()
+
+        try:
+            executor()
+
+        except Exception as exc:
+            self._latch_fault(
+                "RFQ configuration change failed"
+            )
+
+            self._best_effort_rf_off()
+
+            raise RFQSafetyFault(
+                "RFQ configuration change failed"
+            ) from exc
+
+        self.state = (
+            RFQSafetyState.CONFIGURED_OFF
+        )
+
+    def begin_drive_step(
+        self,
+    ) -> None:
+        """
+        Mark the beginning of one positive RF-drive command.
+
+        Positive RF is only allowed after at least one successfully
+        interlocked configuration operation.
+        """
+
+        self._require_not_faulted()
+
+        if self.state not in (
+            RFQSafetyState.CONFIGURED_OFF,
+            RFQSafetyState.RF_ON_SAFE,
+            RFQSafetyState.RF_RAMPING,
+        ):
+            raise RFQSafetyError(
+                "RF drive may only start after a safely configured RFQ"
+            )
+
+        self.state = (
+            RFQSafetyState.RF_RAMPING
+        )
+
+    def latch_external_fault(
+        self,
+        reason: str,
+    ) -> None:
+        """
+        Latch a fault reported by hardware I/O outside this controller
+        and request RF OFF immediately.
+        """
+
+        self._latch_fault(
+            str(
+                reason
+            )
+        )
+
+        self._best_effort_rf_off()
+
     def validate_q(
         self,
         measured_q,
@@ -618,6 +703,14 @@ class RFQSafetyController:
         self.last_measured_q = (
             q_value
         )
+
+        if (
+            self.state
+            == RFQSafetyState.RF_RAMPING
+        ):
+            self.state = (
+                RFQSafetyState.RF_ON_SAFE
+            )
 
         return q_value
 
