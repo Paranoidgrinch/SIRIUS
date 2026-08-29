@@ -8,6 +8,9 @@ from sirius.hardware_guard import (
     HardwareTransitionFailure,
     ParameterSafetyRule,
 )
+from sirius.readback_freshness import (
+    ReadbackFreshnessPolicy,
+)
 from sirius.state import MachineState
 
 
@@ -47,17 +50,54 @@ def guard(
     )
 
 
+def guarded_adapter(
+    max_step=200.0,
+):
+    """
+    Minimal freshness-capable fake adapter.
+
+    The old safe-transition tests exercise command splitting / sequencing,
+    not freshness itself. Dedicated freshness fault-injection tests live
+    in test_safe_transition_freshness.py.
+
+    Therefore this fake supplies an immediately fresh parameter readback.
+    """
+
+    return SimpleNamespace(
+        hardware_guard_policy=(
+            guard(
+                max_step
+            )
+        ),
+        readback_freshness_policy=(
+            ReadbackFreshnessPolicy(
+                timeout_s=1.0,
+                poll_interval_s=0.01,
+            )
+        ),
+        capture_parameter_readback_freshness_barrier=(
+            lambda name:
+                10.0
+        ),
+        read_parameter_snapshot=(
+            lambda name:
+                SimpleNamespace(
+                    value=1000.0,
+                    timestamp=11.0,
+                    quality=None,
+                    source=None,
+                )
+        ),
+    )
+
+
 def test_guarded_apply_splits_large_jump(
     monkeypatch,
 ):
     calls = []
 
-    adapter = SimpleNamespace(
-        hardware_guard_policy=(
-            guard(
-                200.0
-            )
-        )
+    adapter = guarded_adapter(
+        200.0
     )
 
     def fake_raw(
@@ -112,7 +152,6 @@ def test_guarded_apply_splits_large_jump(
         select_target_cup=False,
     )
 
-    # Three actual 200-V hardware steps.
     assert calls[
         0
     ][
@@ -172,12 +211,8 @@ def test_no_second_command_after_first_step_failure(
 ):
     calls = []
 
-    adapter = SimpleNamespace(
-        hardware_guard_policy=(
-            guard(
-                200.0
-            )
-        )
+    adapter = guarded_adapter(
+        200.0
     )
 
     def fake_raw(
@@ -256,12 +291,8 @@ def test_parameter_changes_finish_before_cup_change(
 ):
     events = []
 
-    adapter = SimpleNamespace(
-        hardware_guard_policy=(
-            guard(
-                200.0
-            )
-        )
+    adapter = guarded_adapter(
+        200.0
     )
 
     def fake_raw(
@@ -348,11 +379,7 @@ def test_parameter_changes_finish_before_cup_change(
 
 
 def test_guard_rejects_missing_settling_policy():
-    adapter = SimpleNamespace(
-        hardware_guard_policy=(
-            guard()
-        )
-    )
+    adapter = guarded_adapter()
 
     with pytest.raises(
         Exception,

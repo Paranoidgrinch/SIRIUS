@@ -12,6 +12,10 @@ from sirius.hardware_guard import (
     execute_guarded_transition,
     plan_guarded_transition,
 )
+from sirius.readback_freshness import (
+    ReadbackFreshnessPolicy,
+    wait_for_fresh_parameter_readback,
+)
 from sirius.settling import SettlingPolicy
 from sirius.state import MachineState
 from sirius.transition import (
@@ -121,6 +125,46 @@ def _require_guard_step_handshake(
             "No settling policy configured for guarded parameter "
             f"{parameter_name}"
         ) from exc
+
+
+def _state_with_verified_readback(
+    state: MachineState,
+    parameter_name: str,
+    readback_value: float,
+) -> MachineState:
+    readbacks = dict(
+        state.readbacks
+    )
+
+    readbacks[
+        parameter_name
+    ] = float(
+        readback_value
+    )
+
+    verified = MachineState(
+        mass_u=state.mass_u,
+        parameters=dict(
+            state.parameters
+        ),
+        readbacks=readbacks,
+        cup=state.cup,
+        stage=state.stage,
+        role=state.role,
+        rfq=deepcopy(
+            state.rfq
+        ),
+        fixed_conditions=deepcopy(
+            state.fixed_conditions
+        ),
+        metadata=deepcopy(
+            state.metadata
+        ),
+    )
+
+    verified.validate()
+
+    return verified
 
 
 def apply_state(
@@ -241,6 +285,41 @@ def apply_state(
                 )
             )
 
+            freshness_policy = getattr(
+                adapter,
+                "readback_freshness_policy",
+                None,
+            )
+
+            if not isinstance(
+                freshness_policy,
+                ReadbackFreshnessPolicy,
+            ):
+                raise HardwareSafetyViolation(
+                    "Guarded hardware execution requires an explicit "
+                    "ReadbackFreshnessPolicy"
+                )
+
+            capture_barrier = getattr(
+                adapter,
+                "capture_parameter_readback_freshness_barrier",
+                None,
+            )
+
+            if not callable(
+                capture_barrier
+            ):
+                raise HardwareSafetyViolation(
+                    "Adapter cannot capture parameter readback "
+                    "freshness barriers"
+                )
+
+            # IMPORTANT:
+            # capture immediately BEFORE the physical command.
+            barrier = capture_barrier(
+                step.parameter_name
+            )
+
             transition = _raw_apply_state(
                 adapter,
                 current=executor_state,
@@ -255,8 +334,29 @@ def apply_state(
                 ),
             )
 
+            # Even if the lower settling layer returned, the guarded step
+            # is NOT complete until FLAVIA has produced at least one
+            # timestamped readback strictly newer than the pre-command
+            # barrier.
+            fresh = (
+                wait_for_fresh_parameter_readback(
+                    adapter,
+                    step.parameter_name,
+                    not_before_source_timestamp=(
+                        barrier
+                    ),
+                    policy=(
+                        freshness_policy
+                    ),
+                )
+            )
+
             executor_state = (
-                transition.observed_state
+                _state_with_verified_readback(
+                    transition.observed_state,
+                    step.parameter_name,
+                    fresh.value,
+                )
             )
 
             return executor_state

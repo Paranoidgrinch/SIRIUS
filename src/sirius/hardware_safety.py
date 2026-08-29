@@ -9,6 +9,10 @@ from dataclasses import (
 )
 from typing import Any
 
+from sirius.readback_freshness import (
+    ReadbackFreshnessPolicy,
+)
+
 from sirius.hardware_guard import (
     HardwareGuardPolicy,
 )
@@ -53,6 +57,10 @@ class HardwareSafetyConfig:
 
     cup_selection_policy: CupSelectionPolicy = field(
         default_factory=CupSelectionPolicy
+    )
+
+    readback_freshness_policy: ReadbackFreshnessPolicy = field(
+        default_factory=ReadbackFreshnessPolicy
     )
 
     hardware_guard_policy: (
@@ -135,6 +143,15 @@ class HardwareSafetyConfig:
         ):
             raise TypeError(
                 "cup_selection_policy must be a CupSelectionPolicy"
+            )
+
+        if not isinstance(
+            self.readback_freshness_policy,
+            ReadbackFreshnessPolicy,
+        ):
+            raise TypeError(
+                "readback_freshness_policy must be "
+                "ReadbackFreshnessPolicy"
             )
 
         if (
@@ -292,6 +309,14 @@ class HardwareSafetyConfig:
                     },
                 }
             ),
+            "readback_freshness": {
+                "timeout_s": float(
+                    self.readback_freshness_policy.timeout_s
+                ),
+                "poll_interval_s": float(
+                    self.readback_freshness_policy.poll_interval_s
+                ),
+            },
             "cup_selection": {
                 "timeout_s": float(
                     cup.timeout_s

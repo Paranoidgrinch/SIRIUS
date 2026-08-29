@@ -365,6 +365,13 @@ def _configure_adapter_safety(
         guard,
     )
 
+    setattr(
+        adapter,
+        "readback_freshness_policy",
+        config.hardware_safety
+        .readback_freshness_policy,
+    )
+
     setter = getattr(
         adapter,
         "set_cup_selection_policy",

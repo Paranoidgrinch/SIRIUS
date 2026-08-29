@@ -80,6 +80,12 @@ class KeithleyTimestampError(RuntimeError):
     pass
 
 
+class ParameterReadbackTimestampError(
+    RuntimeError
+):
+    pass
+
+
 class FlaviaBackendAdapter:
     """
     Thin SIRIUS interface to an already running FLAVIA Backend.
@@ -169,6 +175,140 @@ class FlaviaBackendAdapter:
             definition.flavia_channel,
             hardware_value,
         )
+
+    def read_parameter_snapshot(
+        self,
+        name: str,
+    ) -> ChannelSnapshot | None:
+        """
+        Read one physical parameter while preserving FLAVIA timestamp,
+        quality and source metadata.
+
+        Steerer values are converted into the signed SIRIUS coordinate
+        system exactly like read_parameter().
+        """
+
+        if name not in PARAMETERS:
+            raise KeyError(
+                f"Unknown SIRIUS parameter: {name}"
+            )
+
+        channel_name = (
+            READBACK_CHANNELS.get(
+                name
+            )
+        )
+
+        if channel_name is None:
+            return None
+
+        snapshot = self.read_channel(
+            channel_name
+        )
+
+        if snapshot is None:
+            return None
+
+        value = snapshot.value
+
+        if value is not None:
+            try:
+                converted = float(
+                    value
+                )
+            except (
+                TypeError,
+                ValueError,
+                OverflowError,
+            ) as exc:
+                raise ValueError(
+                    f"Invalid readback for {name}: {value!r}"
+                ) from exc
+
+            if not math.isfinite(
+                converted
+            ):
+                raise ValueError(
+                    f"Non-finite readback for {name}: {converted!r}"
+                )
+
+            if name in STEERER_PARAMETERS:
+                converted = (
+                    hardware_steerer_to_sirius(
+                        converted
+                    )
+                )
+
+            value = converted
+
+        return ChannelSnapshot(
+            value=value,
+            timestamp=(
+                snapshot.timestamp
+            ),
+            quality=(
+                snapshot.quality
+            ),
+            source=(
+                snapshot.source
+            ),
+        )
+
+    def capture_parameter_readback_freshness_barrier(
+        self,
+        name: str,
+    ) -> float | None:
+        """
+        Capture the current readback source timestamp immediately before
+        a hardware command.
+
+        If no readback exists yet, return None. A subsequent guarded
+        command must then wait for the first valid timestamped readback.
+
+        A present readback without a usable timestamp is unsafe because
+        SIRIUS cannot distinguish cached pre-command data from new data.
+        """
+
+        snapshot = (
+            self.read_parameter_snapshot(
+                name
+            )
+        )
+
+        if (
+            snapshot is None
+            or snapshot.value is None
+        ):
+            return None
+
+        if snapshot.timestamp is None:
+            raise ParameterReadbackTimestampError(
+                f"{name}: existing FLAVIA readback has no timestamp"
+            )
+
+        try:
+            timestamp = float(
+                snapshot.timestamp
+            )
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            raise ParameterReadbackTimestampError(
+                f"{name}: invalid FLAVIA readback timestamp "
+                f"{snapshot.timestamp!r}"
+            ) from exc
+
+        if not math.isfinite(
+            timestamp
+        ):
+            raise ParameterReadbackTimestampError(
+                f"{name}: non-finite FLAVIA readback timestamp "
+                f"{timestamp!r}"
+            )
+
+        return timestamp
 
     def read_parameter(self, name: str) -> float | None:
         """
