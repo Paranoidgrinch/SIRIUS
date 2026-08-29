@@ -37,7 +37,7 @@ from sirius.scan1d import (
 )
 from sirius.settling import SettlingPolicy
 from sirius.state import MachineState
-from sirius.transition import apply_state
+from sirius.safe_transition import apply_state
 
 
 CommandBuilder = Callable[

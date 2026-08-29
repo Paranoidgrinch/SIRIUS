@@ -333,6 +333,24 @@ def _configure_adapter_safety(
     adapter,
     config: SiriusRunConfig,
 ) -> None:
+    guard = (
+        config.hardware_safety
+        .hardware_guard_policy
+    )
+
+    if guard is None:
+        raise SiriusRuntimeConfigurationError(
+            "Real SIRIUS execution requires an explicit "
+            "HardwareGuardPolicy; no implicit hardware step sizes "
+            "are permitted"
+        )
+
+    setattr(
+        adapter,
+        "hardware_guard_policy",
+        guard,
+    )
+
     setter = getattr(
         adapter,
         "set_cup_selection_policy",

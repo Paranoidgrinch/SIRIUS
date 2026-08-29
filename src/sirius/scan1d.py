@@ -22,8 +22,8 @@ from sirius.settling import SettlingPolicy
 from sirius.state import MachineState
 from sirius.transition import (
     AppliedStateResult,
-    apply_state,
 )
+from sirius.safe_transition import apply_state
 
 
 @dataclass(frozen=True)

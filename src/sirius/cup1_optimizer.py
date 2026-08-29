@@ -38,9 +38,9 @@ from sirius.state import (
 )
 from sirius.transition import (
     AppliedStateResult,
-    apply_state,
     capture_readbacks,
 )
+from sirius.safe_transition import apply_state
 
 
 CUP1_REQUIRED_PARAMETERS = (

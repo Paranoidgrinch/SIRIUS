@@ -47,9 +47,9 @@ from sirius.settling import SettlingPolicy
 from sirius.state import MachineState, utc_now_iso
 from sirius.transition import (
     AppliedStateResult,
-    apply_state,
     capture_readbacks,
 )
+from sirius.safe_transition import apply_state
 from sirius.transmission_scan1d import (
     TransmissionScanResult,
     scan_parameter_transmission_1d,

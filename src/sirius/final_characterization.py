@@ -23,9 +23,9 @@ from sirius.state import (
 )
 from sirius.transition import (
     AppliedStateResult,
-    apply_state,
     capture_readbacks,
 )
+from sirius.safe_transition import apply_state
 
 
 FINAL_CUP_SEQUENCE = (

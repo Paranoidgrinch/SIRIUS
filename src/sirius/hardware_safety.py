@@ -9,6 +9,10 @@ from dataclasses import (
 )
 from typing import Any
 
+from sirius.hardware_guard import (
+    HardwareGuardPolicy,
+)
+
 from sirius.coupled_transition import (
     CoupledTransitionPolicy,
     cooler_end_transition_policy,
@@ -50,6 +54,10 @@ class HardwareSafetyConfig:
     cup_selection_policy: CupSelectionPolicy = field(
         default_factory=CupSelectionPolicy
     )
+
+    hardware_guard_policy: (
+        HardwareGuardPolicy | None
+    ) = None
 
     cooler_end_parameter_order: tuple[
         str,
@@ -127,6 +135,19 @@ class HardwareSafetyConfig:
         ):
             raise TypeError(
                 "cup_selection_policy must be a CupSelectionPolicy"
+            )
+
+        if (
+            self.hardware_guard_policy
+            is not None
+            and not isinstance(
+                self.hardware_guard_policy,
+                HardwareGuardPolicy,
+            )
+        ):
+            raise TypeError(
+                "hardware_guard_policy must be "
+                "HardwareGuardPolicy or None"
             )
 
     def cooler_end_transition_policy(
@@ -239,6 +260,37 @@ class HardwareSafetyConfig:
             ),
             "qpt_parameter_order": list(
                 self.qpt_parameter_order
+            ),
+            "hardware_guard": (
+                None
+                if self.hardware_guard_policy
+                is None
+                else {
+                    "reject_unconfigured_changes": bool(
+                        self.hardware_guard_policy
+                        .reject_unconfigured_changes
+                    ),
+                    "max_total_steps": int(
+                        self.hardware_guard_policy
+                        .max_total_steps
+                    ),
+                    "parameter_rules": {
+                        name: {
+                            "max_step": float(
+                                rule.max_step
+                            ),
+                            "require_readback": bool(
+                                rule.require_readback
+                            ),
+                            "require_settling": bool(
+                                rule.require_settling
+                            ),
+                        }
+                        for name, rule
+                        in self.hardware_guard_policy
+                        .parameter_rules.items()
+                    },
+                }
             ),
             "cup_selection": {
                 "timeout_s": float(
