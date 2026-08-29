@@ -5,6 +5,9 @@ from copy import deepcopy
 from typing import Mapping
 
 from sirius.cup_ack import CupSelectionPolicy
+from sirius.command_cadence import (
+    CommandCadenceController,
+)
 from sirius.hardware_guard import (
     HardwareGuardPolicy,
     HardwareSafetyViolation,
@@ -21,6 +24,38 @@ from sirius.state import MachineState
 from sirius.transition import (
     apply_state as _raw_apply_state,
 )
+
+
+def _command_cadence_controller(
+    adapter,
+) -> CommandCadenceController:
+    controller = getattr(
+        adapter,
+        "command_cadence_controller",
+        None,
+    )
+
+    if controller is None:
+        controller = (
+            CommandCadenceController()
+        )
+
+        setattr(
+            adapter,
+            "command_cadence_controller",
+            controller,
+        )
+
+    if not isinstance(
+        controller,
+        CommandCadenceController,
+    ):
+        raise HardwareSafetyViolation(
+            "adapter.command_cadence_controller must be "
+            "CommandCadenceController"
+        )
+
+    return controller
 
 
 def _commands_changed(
@@ -313,6 +348,20 @@ def apply_state(
                     "Adapter cannot capture parameter readback "
                     "freshness barriers"
                 )
+
+            cadence_controller = (
+                _command_cadence_controller(
+                    adapter
+                )
+            )
+
+            # The reservation waits until this physical channel may
+            # receive another command. It is deliberately performed
+            # before capturing the freshness barrier.
+            cadence_controller.reserve(
+                step.parameter_name,
+                rule.minimum_command_interval_s,
+            )
 
             # IMPORTANT:
             # capture immediately BEFORE the physical command.

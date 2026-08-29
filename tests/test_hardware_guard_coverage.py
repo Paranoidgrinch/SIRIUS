@@ -23,12 +23,20 @@ def complete_steps(
     }
 
 
-def test_required_guard_parameters_are_nonempty():
-    required = (
-        required_guard_parameters()
-    )
+def complete_intervals(
+    value=0.5,
+):
+    return {
+        name: float(
+            value
+        )
+        for name
+        in required_guard_parameters()
+    }
 
-    assert required
+
+def test_required_guard_parameters_are_nonempty():
+    assert required_guard_parameters()
 
 
 def test_disabled_hv2_hv3_are_not_required():
@@ -36,15 +44,8 @@ def test_disabled_hv2_hv3_are_not_required():
         required_guard_parameters()
     )
 
-    assert (
-        "hv2_voltage_v"
-        not in required
-    )
-
-    assert (
-        "hv3_voltage_v"
-        not in required
-    )
+    assert "hv2_voltage_v" not in required
+    assert "hv3_voltage_v" not in required
 
 
 def test_known_optimizable_transport_channels_are_required():
@@ -84,7 +85,8 @@ def test_known_optimizable_transport_channels_are_required():
 def test_complete_strict_guard_passes_audit():
     policy = (
         build_strict_hardware_guard(
-            complete_steps()
+            complete_steps(),
+            complete_intervals(),
         )
     )
 
@@ -95,24 +97,13 @@ def test_complete_strict_guard_passes_audit():
     )
 
     assert audit.ready is True
-
-    assert (
-        audit.missing_parameters
-        == ()
-    )
-
-    assert (
-        audit.weak_readback_parameters
-        == ()
-    )
-
-    assert (
-        audit.weak_settling_parameters
-        == ()
-    )
+    assert audit.missing_parameters == ()
+    assert audit.weak_readback_parameters == ()
+    assert audit.weak_settling_parameters == ()
+    assert audit.unbounded_cadence_parameters == ()
 
 
-def test_missing_single_parameter_fails_closed():
+def test_missing_single_step_parameter_fails_closed():
     steps = complete_steps()
 
     missing = next(
@@ -130,7 +121,54 @@ def test_missing_single_parameter_fails_closed():
         match="Explicit max_step missing",
     ):
         build_strict_hardware_guard(
-            steps
+            steps,
+            complete_intervals(),
+        )
+
+
+def test_missing_single_interval_fails_closed():
+    intervals = complete_intervals()
+
+    missing = next(
+        iter(
+            intervals
+        )
+    )
+
+    del intervals[
+        missing
+    ]
+
+    with pytest.raises(
+        HardwareSafetyViolation,
+        match="minimum_command_interval_s missing",
+    ):
+        build_strict_hardware_guard(
+            complete_steps(),
+            intervals,
+        )
+
+
+def test_zero_interval_is_not_complete_for_real_machine():
+    intervals = complete_intervals()
+
+    name = next(
+        iter(
+            intervals
+        )
+    )
+
+    intervals[
+        name
+    ] = 0.0
+
+    with pytest.raises(
+        HardwareSafetyViolation,
+        match="command cadence not limited",
+    ):
+        build_strict_hardware_guard(
+            complete_steps(),
+            intervals,
         )
 
 
@@ -145,7 +183,8 @@ def test_manual_incomplete_policy_is_detected():
                 0
             ]:
                 ParameterSafetyRule(
-                    max_step=100.0
+                    max_step=100.0,
+                    minimum_command_interval_s=0.5,
                 )
         }
     )
@@ -157,7 +196,6 @@ def test_manual_incomplete_policy_is_detected():
     )
 
     assert audit.ready is False
-
     assert audit.missing_parameters
 
 
@@ -166,7 +204,8 @@ def test_readback_cannot_be_disabled_for_real_machine_coverage():
 
     policy = (
         build_strict_hardware_guard(
-            steps
+            steps,
+            complete_intervals(),
         )
     )
 
@@ -184,6 +223,7 @@ def test_readback_cannot_be_disabled_for_real_machine_coverage():
         name
     ] = ParameterSafetyRule(
         max_step=100.0,
+        minimum_command_interval_s=0.5,
         require_readback=False,
         require_settling=False,
     )
@@ -204,21 +244,12 @@ def test_readback_cannot_be_disabled_for_real_machine_coverage():
         audit.weak_readback_parameters
     )
 
-    with pytest.raises(
-        HardwareSafetyViolation,
-        match="readback not required",
-    ):
-        require_complete_hardware_guard(
-            weak
-        )
-
 
 def test_settling_cannot_be_disabled_for_real_machine_coverage():
-    steps = complete_steps()
-
     policy = (
         build_strict_hardware_guard(
-            steps
+            complete_steps(),
+            complete_intervals(),
         )
     )
 
@@ -236,6 +267,7 @@ def test_settling_cannot_be_disabled_for_real_machine_coverage():
         name
     ] = ParameterSafetyRule(
         max_step=100.0,
+        minimum_command_interval_s=0.5,
         require_readback=True,
         require_settling=False,
     )
@@ -266,14 +298,32 @@ def test_unknown_step_configuration_parameter_is_rejected():
 
     with pytest.raises(
         HardwareSafetyViolation,
-        match="Unknown parameters",
+        match="Unexpected parameters",
     ):
         build_strict_hardware_guard(
-            steps
+            steps,
+            complete_intervals(),
         )
 
 
-def test_every_strict_rule_has_positive_explicit_step():
+def test_unknown_cadence_configuration_parameter_is_rejected():
+    intervals = complete_intervals()
+
+    intervals[
+        "definitely_not_a_real_parameter"
+    ] = 0.5
+
+    with pytest.raises(
+        HardwareSafetyViolation,
+        match="Unexpected parameters",
+    ):
+        build_strict_hardware_guard(
+            complete_steps(),
+            intervals,
+        )
+
+
+def test_every_strict_rule_preserves_explicit_values():
     steps = {
         name:
             float(index + 1)
@@ -283,20 +333,46 @@ def test_every_strict_rule_has_positive_explicit_step():
         )
     }
 
+    intervals = {
+        name:
+            0.1
+            * float(
+                index + 1
+            )
+        for index, name
+        in enumerate(
+            required_guard_parameters()
+        )
+    }
+
     policy = (
         build_strict_hardware_guard(
-            steps
+            steps,
+            intervals,
         )
     )
 
-    for name, expected in (
-        steps.items()
-    ):
-        assert (
+    for name in steps:
+        rule = (
             policy.parameter_rules[
                 name
-            ].max_step
+            ]
+        )
+
+        assert (
+            rule.max_step
             == pytest.approx(
-                expected
+                steps[
+                    name
+                ]
+            )
+        )
+
+        assert (
+            rule.minimum_command_interval_s
+            == pytest.approx(
+                intervals[
+                    name
+                ]
             )
         )

@@ -78,6 +78,8 @@ class ParameterSafetyRule:
 
     max_step: float
 
+    minimum_command_interval_s: float = 0.0
+
     require_readback: bool = True
     require_settling: bool = True
 
@@ -94,6 +96,21 @@ class ParameterSafetyRule:
         ):
             raise ValueError(
                 "max_step must be finite and greater than zero"
+            )
+
+        interval = float(
+            self.minimum_command_interval_s
+        )
+
+        if (
+            not math.isfinite(
+                interval
+            )
+            or interval < 0
+        ):
+            raise ValueError(
+                "minimum_command_interval_s must be finite and "
+                "non-negative"
             )
 
         if (
@@ -203,6 +220,11 @@ class HardwareGuardCoverage:
         ...
     ]
 
+    unbounded_cadence_parameters: tuple[
+        str,
+        ...
+    ]
+
     @property
     def ready(
         self,
@@ -211,6 +233,7 @@ class HardwareGuardCoverage:
             self.missing_parameters
             or self.weak_readback_parameters
             or self.weak_settling_parameters
+            or self.unbounded_cadence_parameters
         )
 
 
@@ -298,6 +321,20 @@ def audit_hardware_guard_policy(
         )
     )
 
+    unbounded_cadence = tuple(
+        name
+        for name
+        in required
+        if (
+            name in policy.parameter_rules
+            and float(
+                policy.parameter_rules[
+                    name
+                ].minimum_command_interval_s
+            ) <= 0
+        )
+    )
+
     return HardwareGuardCoverage(
         required_parameters=required,
         configured_parameters=configured,
@@ -307,6 +344,9 @@ def audit_hardware_guard_policy(
         ),
         weak_settling_parameters=(
             weak_settling
+        ),
+        unbounded_cadence_parameters=(
+            unbounded_cadence
         ),
     )
 
@@ -354,6 +394,14 @@ def require_complete_hardware_guard(
             )
         )
 
+    if coverage.unbounded_cadence_parameters:
+        problems.append(
+            "command cadence not limited: "
+            + ", ".join(
+                coverage.unbounded_cadence_parameters
+            )
+        )
+
     raise HardwareSafetyViolation(
         "Incomplete real-machine HardwareGuardPolicy; "
         + "; ".join(
@@ -367,51 +415,92 @@ def build_strict_hardware_guard(
         str,
         float,
     ],
+    minimum_command_interval_by_parameter: Mapping[
+        str,
+        float,
+    ],
     *,
     max_total_steps: int = 10000,
 ) -> HardwareGuardPolicy:
     """
     Build the standard real-machine guard.
 
-    Every enabled/optimizable parameter must receive an EXPLICIT max_step.
-    No facility-specific step size is invented by SIRIUS.
+    Every enabled/optimizable parameter must receive EXPLICIT values for:
 
-    All generated rules require:
-        readback
-        settling
+        max_step
+        minimum_command_interval_s
+
+    SIRIUS deliberately invents neither value.
     """
 
     required = (
         required_guard_parameters()
     )
 
-    missing = tuple(
+    required_set = set(
+        required
+    )
+
+    missing_steps = tuple(
         name
         for name
         in required
         if name not in max_step_by_parameter
     )
 
-    if missing:
+    if missing_steps:
         raise HardwareSafetyViolation(
             "Explicit max_step missing for: "
             + ", ".join(
-                missing
+                missing_steps
             )
         )
 
-    unknown = tuple(
+    missing_intervals = tuple(
+        name
+        for name
+        in required
+        if (
+            name
+            not in minimum_command_interval_by_parameter
+        )
+    )
+
+    if missing_intervals:
+        raise HardwareSafetyViolation(
+            "Explicit minimum_command_interval_s missing for: "
+            + ", ".join(
+                missing_intervals
+            )
+        )
+
+    unexpected_steps = tuple(
         name
         for name
         in max_step_by_parameter
-        if name not in PARAMETERS
+        if name not in required_set
     )
 
-    if unknown:
+    if unexpected_steps:
         raise HardwareSafetyViolation(
-            "Unknown parameters in max_step configuration: "
+            "Unexpected parameters in max_step configuration: "
             + ", ".join(
-                unknown
+                unexpected_steps
+            )
+        )
+
+    unexpected_intervals = tuple(
+        name
+        for name
+        in minimum_command_interval_by_parameter
+        if name not in required_set
+    )
+
+    if unexpected_intervals:
+        raise HardwareSafetyViolation(
+            "Unexpected parameters in command-cadence configuration: "
+            + ", ".join(
+                unexpected_intervals
             )
         )
 
@@ -419,6 +508,11 @@ def build_strict_hardware_guard(
         name: ParameterSafetyRule(
             max_step=float(
                 max_step_by_parameter[
+                    name
+                ]
+            ),
+            minimum_command_interval_s=float(
+                minimum_command_interval_by_parameter[
                     name
                 ]
             ),

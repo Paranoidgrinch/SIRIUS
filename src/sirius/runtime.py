@@ -18,6 +18,10 @@ from sirius.default_stages import (
     build_default_stages,
     inspect_default_stage_requirements,
 )
+from sirius.command_cadence import (
+    CommandCadenceController,
+)
+
 from sirius.hardware_guard import (
     require_complete_hardware_guard,
 )
@@ -370,6 +374,12 @@ def _configure_adapter_safety(
         "readback_freshness_policy",
         config.hardware_safety
         .readback_freshness_policy,
+    )
+
+    setattr(
+        adapter,
+        "command_cadence_controller",
+        CommandCadenceController(),
     )
 
     setter = getattr(

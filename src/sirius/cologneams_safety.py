@@ -123,6 +123,93 @@ COLOGNEAMS_COMMISSIONING_MAX_STEPS: dict[
 }
 
 
+# ---------------------------------------------------------------------------
+# Minimum time between two commands to the SAME physical channel.
+#
+# These are provisional commissioning pacing values, not device ratings.
+#
+# Readback settling/freshness may impose a substantially longer delay.
+# ---------------------------------------------------------------------------
+
+COLOGNEAMS_COMMISSIONING_MIN_COMMAND_INTERVALS_S: dict[
+    str,
+    float,
+] = {
+    "sputter_voltage_v":
+        0.5,
+
+    "extraction_voltage_v":
+        0.5,
+
+    "einzel_lens_voltage_v":
+        0.5,
+
+    "magnet_current_a":
+        1.0,
+
+    "lens2_voltage_v":
+        0.25,
+
+    "steerer_x1_v":
+        0.1,
+
+    "steerer_y1_v":
+        0.1,
+
+    "ion_cooler_voltage_v":
+        0.5,
+
+    "deceleration_voltage_v":
+        0.5,
+
+    "acceleration_voltage_v":
+        0.5,
+
+    "guidefield1_voltage_v":
+        0.25,
+
+    "guidefield2_voltage_v":
+        0.25,
+
+    "quadrupole1_voltage_v":
+        0.25,
+
+    "quadrupole2_voltage_v":
+        0.25,
+
+    "quadrupole3_voltage_v":
+        0.25,
+
+    "steerer_x2_v":
+        0.1,
+
+    "steerer_y2_v":
+        0.1,
+
+    "esa_voltage_v":
+        0.25,
+
+    "steerer_x3_v":
+        0.1,
+
+    "steerer_y3_v":
+        0.1,
+
+    "lens4_voltage_v":
+        0.25,
+}
+
+
+def cologneams_commissioning_minimum_intervals_s(
+) -> dict[
+    str,
+    float,
+]:
+    return dict(
+        COLOGNEAMS_COMMISSIONING_MIN_COMMAND_INTERVALS_S
+    )
+
+
 COOLER_END_COMMISSIONING_MAX_STEP_V = (
     COLOGNEAMS_COMMISSIONING_MAX_STEPS[
         "deceleration_voltage_v"
@@ -159,21 +246,22 @@ def build_cologneams_commissioning_guard(
         str,
         float,
     ] | None = None,
+    minimum_interval_overrides_s: Mapping[
+        str,
+        float,
+    ] | None = None,
     max_total_steps: int = 10000,
 ) -> HardwareGuardPolicy:
     """
-    Build the complete initial CologneAMS guard.
-
-    overrides:
-        Explicit per-run changes to one or more commissioning limits.
-
-        This is deliberately explicit so experimental changes remain
-        visible in the run configuration / manifest rather than being
-        silently learned by SIRIUS.
+    Build the complete initial CologneAMS commissioning guard.
     """
 
     steps = (
         cologneams_commissioning_max_steps()
+    )
+
+    intervals = (
+        cologneams_commissioning_minimum_intervals_s()
     )
 
     if overrides is not None:
@@ -181,10 +269,7 @@ def build_cologneams_commissioning_guard(
             parameter_name,
             max_step,
         ) in overrides.items():
-            if (
-                parameter_name
-                not in steps
-            ):
+            if parameter_name not in steps:
                 raise ValueError(
                     "Cannot override unknown or non-required "
                     "CologneAMS commissioning parameter "
@@ -197,9 +282,28 @@ def build_cologneams_commissioning_guard(
                 max_step
             )
 
+    if minimum_interval_overrides_s is not None:
+        for (
+            parameter_name,
+            minimum_interval,
+        ) in minimum_interval_overrides_s.items():
+            if parameter_name not in intervals:
+                raise ValueError(
+                    "Cannot override unknown or non-required "
+                    "CologneAMS command-cadence parameter "
+                    f"{parameter_name}"
+                )
+
+            intervals[
+                parameter_name
+            ] = float(
+                minimum_interval
+            )
+
     guard = (
         build_strict_hardware_guard(
             steps,
+            intervals,
             max_total_steps=(
                 max_total_steps
             ),
@@ -222,25 +326,22 @@ def build_cologneams_hardware_safety(
         str,
         float,
     ] | None = None,
+    minimum_interval_overrides_s: Mapping[
+        str,
+        float,
+    ] | None = None,
     max_total_steps: int = 10000,
 ) -> HardwareSafetyConfig:
     """
     Construct the complete initial CologneAMS SIRIUS safety configuration.
-
-    One factory therefore supplies consistently:
-
-        - general hardware guard
-        - HV1/HV4 coupled-transition step limit
-        - QPT coupled-transition step limit
-        - positive Faraday-cup acknowledgement policy
-
-    HV/QPT values are derived from the same central map used by the
-    general guard, preventing two different limits from silently existing
-    for the same physical channel.
     """
 
     steps = (
         cologneams_commissioning_max_steps()
+    )
+
+    intervals = (
+        cologneams_commissioning_minimum_intervals_s()
     )
 
     if max_step_overrides is not None:
@@ -248,10 +349,7 @@ def build_cologneams_hardware_safety(
             parameter_name,
             max_step,
         ) in max_step_overrides.items():
-            if (
-                parameter_name
-                not in steps
-            ):
+            if parameter_name not in steps:
                 raise ValueError(
                     "Cannot override unknown or non-required "
                     "CologneAMS commissioning parameter "
@@ -264,9 +362,28 @@ def build_cologneams_hardware_safety(
                 max_step
             )
 
+    if minimum_interval_overrides_s is not None:
+        for (
+            parameter_name,
+            minimum_interval,
+        ) in minimum_interval_overrides_s.items():
+            if parameter_name not in intervals:
+                raise ValueError(
+                    "Cannot override unknown or non-required "
+                    "CologneAMS command-cadence parameter "
+                    f"{parameter_name}"
+                )
+
+            intervals[
+                parameter_name
+            ] = float(
+                minimum_interval
+            )
+
     guard = (
         build_strict_hardware_guard(
             steps,
+            intervals,
             max_total_steps=(
                 max_total_steps
             ),

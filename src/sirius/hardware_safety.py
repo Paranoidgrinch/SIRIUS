@@ -296,6 +296,9 @@ class HardwareSafetyConfig:
                             "max_step": float(
                                 rule.max_step
                             ),
+                            "minimum_command_interval_s": float(
+                                rule.minimum_command_interval_s
+                            ),
                             "require_readback": bool(
                                 rule.require_readback
                             ),
