@@ -159,6 +159,290 @@ class HardwareGuardPolicy:
 
 
 @dataclass(frozen=True)
+class HardwareGuardCoverage:
+    """
+    Static audit of the deterministic hardware guard.
+
+    required_parameters:
+        every currently enabled and optimizable SIRIUS parameter
+
+    missing_parameters:
+        parameters that could be optimized but have no explicit rule
+
+    weak_readback_parameters:
+        rules that do not require readback
+
+    weak_settling_parameters:
+        rules that do not require settling
+
+    A real SIRIUS run is permitted only when ready=True.
+    """
+
+    required_parameters: tuple[
+        str,
+        ...
+    ]
+
+    configured_parameters: tuple[
+        str,
+        ...
+    ]
+
+    missing_parameters: tuple[
+        str,
+        ...
+    ]
+
+    weak_readback_parameters: tuple[
+        str,
+        ...
+    ]
+
+    weak_settling_parameters: tuple[
+        str,
+        ...
+    ]
+
+    @property
+    def ready(
+        self,
+    ) -> bool:
+        return not (
+            self.missing_parameters
+            or self.weak_readback_parameters
+            or self.weak_settling_parameters
+        )
+
+
+def required_guard_parameters(
+) -> tuple[
+    str,
+    ...
+]:
+    """
+    Return every parameter that can currently be changed by an optimizer.
+
+    This derives the safety requirement from the canonical PARAMETERS
+    registry rather than maintaining a second hand-written parameter list.
+    """
+
+    return tuple(
+        name
+        for name, definition
+        in PARAMETERS.items()
+        if (
+            definition.enabled
+            and definition.optimizable
+        )
+    )
+
+
+def audit_hardware_guard_policy(
+    policy: HardwareGuardPolicy,
+) -> HardwareGuardCoverage:
+    """
+    Verify that every enabled/optimizable hardware parameter has an
+    explicit strong handshake rule.
+
+    Strong handshake means:
+
+        bounded command step
+        + readback required
+        + settling required
+    """
+
+    if not isinstance(
+        policy,
+        HardwareGuardPolicy,
+    ):
+        raise TypeError(
+            "policy must be HardwareGuardPolicy"
+        )
+
+    required = (
+        required_guard_parameters()
+    )
+
+    configured = tuple(
+        policy.parameter_rules
+    )
+
+    missing = tuple(
+        name
+        for name
+        in required
+        if name not in policy.parameter_rules
+    )
+
+    weak_readback = tuple(
+        name
+        for name
+        in required
+        if (
+            name in policy.parameter_rules
+            and not policy.parameter_rules[
+                name
+            ].require_readback
+        )
+    )
+
+    weak_settling = tuple(
+        name
+        for name
+        in required
+        if (
+            name in policy.parameter_rules
+            and not policy.parameter_rules[
+                name
+            ].require_settling
+        )
+    )
+
+    return HardwareGuardCoverage(
+        required_parameters=required,
+        configured_parameters=configured,
+        missing_parameters=missing,
+        weak_readback_parameters=(
+            weak_readback
+        ),
+        weak_settling_parameters=(
+            weak_settling
+        ),
+    )
+
+
+def require_complete_hardware_guard(
+    policy: HardwareGuardPolicy,
+) -> HardwareGuardCoverage:
+    """
+    Fail closed unless the complete currently optimizable machine surface
+    has deterministic transition protection.
+    """
+
+    coverage = (
+        audit_hardware_guard_policy(
+            policy
+        )
+    )
+
+    if coverage.ready:
+        return coverage
+
+    problems = []
+
+    if coverage.missing_parameters:
+        problems.append(
+            "missing rules: "
+            + ", ".join(
+                coverage.missing_parameters
+            )
+        )
+
+    if coverage.weak_readback_parameters:
+        problems.append(
+            "readback not required: "
+            + ", ".join(
+                coverage.weak_readback_parameters
+            )
+        )
+
+    if coverage.weak_settling_parameters:
+        problems.append(
+            "settling not required: "
+            + ", ".join(
+                coverage.weak_settling_parameters
+            )
+        )
+
+    raise HardwareSafetyViolation(
+        "Incomplete real-machine HardwareGuardPolicy; "
+        + "; ".join(
+            problems
+        )
+    )
+
+
+def build_strict_hardware_guard(
+    max_step_by_parameter: Mapping[
+        str,
+        float,
+    ],
+    *,
+    max_total_steps: int = 10000,
+) -> HardwareGuardPolicy:
+    """
+    Build the standard real-machine guard.
+
+    Every enabled/optimizable parameter must receive an EXPLICIT max_step.
+    No facility-specific step size is invented by SIRIUS.
+
+    All generated rules require:
+        readback
+        settling
+    """
+
+    required = (
+        required_guard_parameters()
+    )
+
+    missing = tuple(
+        name
+        for name
+        in required
+        if name not in max_step_by_parameter
+    )
+
+    if missing:
+        raise HardwareSafetyViolation(
+            "Explicit max_step missing for: "
+            + ", ".join(
+                missing
+            )
+        )
+
+    unknown = tuple(
+        name
+        for name
+        in max_step_by_parameter
+        if name not in PARAMETERS
+    )
+
+    if unknown:
+        raise HardwareSafetyViolation(
+            "Unknown parameters in max_step configuration: "
+            + ", ".join(
+                unknown
+            )
+        )
+
+    rules = {
+        name: ParameterSafetyRule(
+            max_step=float(
+                max_step_by_parameter[
+                    name
+                ]
+            ),
+            require_readback=True,
+            require_settling=True,
+        )
+        for name
+        in required
+    }
+
+    policy = HardwareGuardPolicy(
+        parameter_rules=rules,
+        reject_unconfigured_changes=True,
+        max_total_steps=max_total_steps,
+    )
+
+    require_complete_hardware_guard(
+        policy
+    )
+
+    return policy
+
+
+@dataclass(frozen=True)
 class GuardedTransitionStep:
     """
     One permitted physical command step.

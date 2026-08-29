@@ -18,6 +18,10 @@ from sirius.default_stages import (
     build_default_stages,
     inspect_default_stage_requirements,
 )
+from sirius.hardware_guard import (
+    require_complete_hardware_guard,
+)
+
 from sirius.measurement import (
     MeasurementPolicy,
 )
@@ -344,6 +348,16 @@ def _configure_adapter_safety(
             "HardwareGuardPolicy; no implicit hardware step sizes "
             "are permitted"
         )
+
+    try:
+        require_complete_hardware_guard(
+            guard
+        )
+    except Exception as exc:
+        raise SiriusRuntimeConfigurationError(
+            "Real SIRIUS execution requires complete hardware-guard "
+            f"coverage: {exc}"
+        ) from exc
 
     setattr(
         adapter,
