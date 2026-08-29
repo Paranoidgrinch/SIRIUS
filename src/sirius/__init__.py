@@ -1,1 +1,1 @@
-﻿"""SIRIUS automated ion-beam optimization."""
+"""SIRIUS automated ion-beam optimization."""
