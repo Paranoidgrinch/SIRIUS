@@ -10,6 +10,10 @@ from sirius.hardware_guard import (
     build_strict_hardware_guard,
     require_complete_hardware_guard,
 )
+from sirius.readback_quality import (
+    ReadbackQualityPolicy,
+)
+
 from sirius.hardware_safety import (
     HardwareSafetyConfig,
 )
@@ -322,6 +326,9 @@ def build_cologneams_hardware_safety(
     cup_selection_policy: (
         CupSelectionPolicy | None
     ) = None,
+    readback_quality_policy: (
+        ReadbackQualityPolicy | None
+    ) = None,
     max_step_overrides: Mapping[
         str,
         float,
@@ -437,6 +444,9 @@ def build_cologneams_hardware_safety(
         ),
         cup_selection_policy=(
             cup_policy
+        ),
+        readback_quality_policy=(
+            readback_quality_policy
         ),
         hardware_guard_policy=(
             guard

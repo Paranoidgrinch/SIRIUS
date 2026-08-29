@@ -397,6 +397,11 @@ def apply_state(
                     policy=(
                         freshness_policy
                     ),
+                    quality_policy=getattr(
+                        adapter,
+                        "readback_quality_policy",
+                        None,
+                    ),
                 )
             )
 

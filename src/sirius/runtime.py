@@ -376,6 +376,30 @@ def _configure_adapter_safety(
         .readback_freshness_policy,
     )
 
+    quality_policy = (
+        config.hardware_safety
+        .readback_quality_policy
+    )
+
+    if quality_policy is None:
+        raise SiriusRuntimeConfigurationError(
+            "Real SIRIUS execution requires an explicit "
+            "ReadbackQualityPolicy derived from the actual FLAVIA "
+            "readback quality semantics"
+        )
+
+    if not quality_policy.strict:
+        raise SiriusRuntimeConfigurationError(
+            "Real SIRIUS execution requires strict readback quality "
+            "checking; missing quality may not be accepted"
+        )
+
+    setattr(
+        adapter,
+        "readback_quality_policy",
+        quality_policy,
+    )
+
     setattr(
         adapter,
         "command_cadence_controller",

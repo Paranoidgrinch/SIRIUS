@@ -5,6 +5,10 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from sirius.readback_quality import (
+    ReadbackQualityPolicy,
+)
+
 
 class ReadbackFreshnessError(
     RuntimeError
@@ -94,6 +98,10 @@ class FreshReadbackObservation:
 
     source_timestamp: float
 
+    quality: object | None
+
+    source: object | None
+
     elapsed_s: float
 
     stale_observations: int
@@ -167,6 +175,7 @@ def wait_for_fresh_parameter_readback(
     *,
     not_before_source_timestamp: float | None,
     policy: ReadbackFreshnessPolicy,
+    quality_policy: ReadbackQualityPolicy | None = None,
     monotonic: Callable[
         [],
         float,
@@ -198,6 +207,18 @@ def wait_for_fresh_parameter_readback(
     ):
         raise TypeError(
             "policy must be ReadbackFreshnessPolicy"
+        )
+
+    if (
+        quality_policy
+        is not None
+        and not isinstance(
+            quality_policy,
+            ReadbackQualityPolicy,
+        )
+    ):
+        raise TypeError(
+            "quality_policy must be ReadbackQualityPolicy or None"
         )
 
     if (
@@ -281,6 +302,18 @@ def wait_for_fresh_parameter_readback(
 
             continue
 
+        if quality_policy is not None:
+            quality_policy.require_accepted(
+                getattr(
+                    snapshot,
+                    "quality",
+                    None,
+                ),
+                parameter_name=(
+                    parameter_name
+                ),
+            )
+
         value = _finite_value(
             snapshot.value,
             parameter_name=(
@@ -295,6 +328,16 @@ def wait_for_fresh_parameter_readback(
             value=value,
             source_timestamp=(
                 timestamp
+            ),
+            quality=getattr(
+                snapshot,
+                "quality",
+                None,
+            ),
+            source=getattr(
+                snapshot,
+                "source",
+                None,
             ),
             elapsed_s=(
                 elapsed

@@ -213,6 +213,7 @@ def test_barrier_is_captured_before_command(
         *,
         not_before_source_timestamp,
         policy,
+        quality_policy=None,
     ):
         events.append(
             "fresh"

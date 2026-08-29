@@ -9,6 +9,10 @@ from dataclasses import (
 )
 from typing import Any
 
+from sirius.readback_quality import (
+    ReadbackQualityPolicy,
+)
+
 from sirius.readback_freshness import (
     ReadbackFreshnessPolicy,
 )
@@ -62,6 +66,10 @@ class HardwareSafetyConfig:
     readback_freshness_policy: ReadbackFreshnessPolicy = field(
         default_factory=ReadbackFreshnessPolicy
     )
+
+    readback_quality_policy: (
+        ReadbackQualityPolicy | None
+    ) = None
 
     hardware_guard_policy: (
         HardwareGuardPolicy | None
@@ -152,6 +160,19 @@ class HardwareSafetyConfig:
             raise TypeError(
                 "readback_freshness_policy must be "
                 "ReadbackFreshnessPolicy"
+            )
+
+        if (
+            self.readback_quality_policy
+            is not None
+            and not isinstance(
+                self.readback_quality_policy,
+                ReadbackQualityPolicy,
+            )
+        ):
+            raise TypeError(
+                "readback_quality_policy must be "
+                "ReadbackQualityPolicy or None"
             )
 
         if (
@@ -310,6 +331,25 @@ class HardwareSafetyConfig:
                         in self.hardware_guard_policy
                         .parameter_rules.items()
                     },
+                }
+            ),
+            "readback_quality": (
+                None
+                if self.readback_quality_policy
+                is None
+                else {
+                    "accepted_values": list(
+                        self.readback_quality_policy
+                        .accepted_values
+                    ),
+                    "allow_missing": bool(
+                        self.readback_quality_policy
+                        .allow_missing
+                    ),
+                    "case_sensitive": bool(
+                        self.readback_quality_policy
+                        .case_sensitive
+                    ),
                 }
             ),
             "readback_freshness": {
