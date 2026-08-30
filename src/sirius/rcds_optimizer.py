@@ -727,7 +727,68 @@ class RobustConjugateDirectionOptimizer:
                 policy.line_half_width,
             )
 
+            record(
+                "line_search_started",
+                normalized_origin=tuple(
+                    float(value)
+                    for value
+                    in point
+                ),
+                physical_origin=tuple(
+                    float(value)
+                    for value
+                    in _normalized_to_physical(
+                        problem,
+                        point,
+                    )
+                ),
+                direction=tuple(
+                    float(value)
+                    for value
+                    in direction
+                ),
+                alpha_lower=float(
+                    lower
+                ),
+                alpha_upper=float(
+                    upper
+                ),
+                incumbent_objective=float(
+                    starting_evaluation.value
+                ),
+                incumbent_uncertainty=float(
+                    starting_evaluation.sem
+                ),
+            )
+
             if upper < lower:
+                record(
+                    "line_search_completed",
+                    normalized_best_point=tuple(
+                        float(value)
+                        for value
+                        in point
+                    ),
+                    physical_best_point=tuple(
+                        float(value)
+                        for value
+                        in starting_evaluation.point
+                    ),
+                    direction=tuple(
+                        float(value)
+                        for value
+                        in direction
+                    ),
+                    objective=float(
+                        starting_evaluation.value
+                    ),
+                    uncertainty=float(
+                        starting_evaluation.sem
+                    ),
+                    grid_samples_evaluated=0,
+                    reason="empty_interval",
+                )
+
                 return (
                     point,
                     starting_evaluation,
@@ -1021,6 +1082,37 @@ class RobustConjugateDirectionOptimizer:
                                 line_best_evaluation = (
                                     vertex_evaluation
                                 )
+
+            record(
+                "line_search_completed",
+                normalized_best_point=tuple(
+                    float(value)
+                    for value
+                    in line_best_point
+                ),
+                physical_best_point=tuple(
+                    float(value)
+                    for value
+                    in line_best_evaluation.point
+                ),
+                direction=tuple(
+                    float(value)
+                    for value
+                    in direction
+                ),
+                objective=float(
+                    line_best_evaluation.value
+                ),
+                uncertainty=float(
+                    line_best_evaluation.sem
+                ),
+                grid_samples_evaluated=int(
+                    len(
+                        evaluated
+                    )
+                ),
+                reason="completed",
+            )
 
             return (
                 line_best_point,

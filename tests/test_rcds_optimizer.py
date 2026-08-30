@@ -1343,3 +1343,210 @@ def test_rcds_trace_records_parabolic_refinement_decision():
         in first
     )
 
+
+def test_rcds_trace_brackets_line_searches():
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "scaled",
+                10.0,
+                20.0,
+            ),
+        ),
+        initial_point=(
+            12.0,
+        ),
+        maximize=True,
+    )
+
+    def evaluator(
+        point,
+    ):
+        x = point[
+            0
+        ]
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                -(
+                    x
+                    - 16.0
+                ) ** 2
+            ),
+            sem=0.02,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=2,
+                max_evaluations=100,
+                line_samples=5,
+                line_half_width=0.5,
+                stall_iterations=2,
+                parabolic_refinement=True,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    trace = result.metadata[
+        "trace"
+    ]
+
+    starts = tuple(
+        event
+        for event
+        in trace
+        if (
+            event[
+                "event_type"
+            ]
+            == "line_search_started"
+        )
+    )
+
+    completions = tuple(
+        event
+        for event
+        in trace
+        if (
+            event[
+                "event_type"
+            ]
+            == "line_search_completed"
+        )
+    )
+
+    assert starts
+    assert completions
+
+    assert (
+        len(
+            starts
+        )
+        == len(
+            completions
+        )
+    )
+
+    for started, completed in zip(
+        starts,
+        completions,
+    ):
+        assert (
+            len(
+                started[
+                    "normalized_origin"
+                ]
+            )
+            == 1
+        )
+
+        assert (
+            len(
+                started[
+                    "physical_origin"
+                ]
+            )
+            == 1
+        )
+
+        assert (
+            len(
+                started[
+                    "direction"
+                ]
+            )
+            == 1
+        )
+
+        normalized = started[
+            "normalized_origin"
+        ][
+            0
+        ]
+
+        physical = started[
+            "physical_origin"
+        ][
+            0
+        ]
+
+        assert physical == pytest.approx(
+            10.0
+            + 10.0
+            * normalized
+        )
+
+        assert (
+            started[
+                "alpha_lower"
+            ]
+            <= 0.0
+            <= started[
+                "alpha_upper"
+            ]
+        )
+
+        assert completed[
+            "direction"
+        ] == pytest.approx(
+            started[
+                "direction"
+            ]
+        )
+
+        assert (
+            len(
+                completed[
+                    "normalized_best_point"
+                ]
+            )
+            == 1
+        )
+
+        assert (
+            len(
+                completed[
+                    "physical_best_point"
+                ]
+            )
+            == 1
+        )
+
+        assert (
+            completed[
+                "grid_samples_evaluated"
+            ]
+            >= 1
+        )
+
+        assert (
+            completed[
+                "reason"
+            ]
+            == "completed"
+        )
+
+        assert isinstance(
+            completed[
+                "objective"
+            ],
+            float,
+        )
+
+        assert (
+            completed[
+                "uncertainty"
+            ]
+            == pytest.approx(
+                0.02
+            )
+        )
+
