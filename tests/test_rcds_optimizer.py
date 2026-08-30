@@ -1124,6 +1124,7 @@ def test_rcds_trace_records_grid_line_search_decisions():
                 line_samples=5,
                 line_half_width=1.0,
                 stall_iterations=2,
+                parabolic_refinement=False,
             )
         ).optimize(
             problem,
@@ -1209,4 +1210,136 @@ def test_rcds_trace_records_grid_line_search_decisions():
             "incumbent_uncertainty"
             in event
         )
+
+
+def test_rcds_trace_records_parabolic_refinement_decision():
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "x",
+                0.0,
+                1.0,
+            ),
+        ),
+        initial_point=(
+            0.2,
+        ),
+        maximize=True,
+    )
+
+    def evaluator(
+        point,
+    ):
+        x = point[
+            0
+        ]
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                -(
+                    x
+                    - 0.53
+                ) ** 2
+            ),
+            sem=0.0,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=1,
+                max_evaluations=30,
+                line_samples=5,
+                line_half_width=0.5,
+                stall_iterations=1,
+                parabolic_refinement=True,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    samples = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "line_search_sample"
+            and event[
+                "source"
+            ]
+            == "parabolic_refinement"
+        )
+    )
+
+    assert samples
+
+    first = samples[
+        0
+    ]
+
+    assert first[
+        "normalized_candidate"
+    ][
+        0
+    ] == pytest.approx(
+        0.53,
+        abs=1e-10,
+    )
+
+    assert first[
+        "physical_candidate"
+    ][
+        0
+    ] == pytest.approx(
+        0.53,
+        abs=1e-10,
+    )
+
+    assert first[
+        "alpha"
+    ] == pytest.approx(
+        0.33,
+        abs=1e-10,
+    )
+
+    assert first[
+        "objective"
+    ] == pytest.approx(
+        0.0,
+        abs=1e-14,
+    )
+
+    assert first[
+        "uncertainty"
+    ] == pytest.approx(
+        0.0,
+        abs=1e-14,
+    )
+
+    assert (
+        first[
+            "accepted"
+        ]
+        is True
+    )
+
+    assert (
+        "incumbent_objective"
+        in first
+    )
+
+    assert (
+        "incumbent_uncertainty"
+        in first
+    )
 

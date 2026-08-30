@@ -961,18 +961,66 @@ class RobustConjugateDirectionOptimizer:
                         if (
                             vertex_evaluation
                             is not None
-                            and problem.is_better(
-                                vertex_evaluation,
-                                line_best_evaluation,
-                            )
                         ):
-                            line_best_point = (
-                                vertex_point
+                            incumbent_before = (
+                                line_best_evaluation
                             )
 
-                            line_best_evaluation = (
-                                vertex_evaluation
+                            accepted = (
+                                problem.is_better(
+                                    vertex_evaluation,
+                                    incumbent_before,
+                                )
                             )
+
+                            record(
+                                "line_search_sample",
+                                source=(
+                                    "parabolic_refinement"
+                                ),
+                                alpha=float(
+                                    vertex
+                                ),
+                                normalized_candidate=tuple(
+                                    float(value)
+                                    for value
+                                    in vertex_point
+                                ),
+                                physical_candidate=tuple(
+                                    float(value)
+                                    for value
+                                    in vertex_evaluation.point
+                                ),
+                                direction=tuple(
+                                    float(value)
+                                    for value
+                                    in direction
+                                ),
+                                objective=float(
+                                    vertex_evaluation.value
+                                ),
+                                uncertainty=float(
+                                    vertex_evaluation.sem
+                                ),
+                                incumbent_objective=float(
+                                    incumbent_before.value
+                                ),
+                                incumbent_uncertainty=float(
+                                    incumbent_before.sem
+                                ),
+                                accepted=bool(
+                                    accepted
+                                ),
+                            )
+
+                            if accepted:
+                                line_best_point = (
+                                    vertex_point
+                                )
+
+                                line_best_evaluation = (
+                                    vertex_evaluation
+                                )
 
             return (
                 line_best_point,
