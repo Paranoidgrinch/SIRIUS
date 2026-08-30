@@ -788,10 +788,56 @@ class RobustConjugateDirectionOptimizer:
                     )
                 )
 
-                if problem.is_better(
-                    candidate,
-                    line_best_evaluation,
-                ):
+                incumbent_before = (
+                    line_best_evaluation
+                )
+
+                accepted = (
+                    problem.is_better(
+                        candidate,
+                        incumbent_before,
+                    )
+                )
+
+                record(
+                    "line_search_sample",
+                    source="grid",
+                    alpha=float(
+                        alpha
+                    ),
+                    normalized_candidate=tuple(
+                        float(value)
+                        for value
+                        in candidate_point
+                    ),
+                    physical_candidate=tuple(
+                        float(value)
+                        for value
+                        in candidate.point
+                    ),
+                    direction=tuple(
+                        float(value)
+                        for value
+                        in direction
+                    ),
+                    objective=float(
+                        candidate.value
+                    ),
+                    uncertainty=float(
+                        candidate.sem
+                    ),
+                    incumbent_objective=float(
+                        incumbent_before.value
+                    ),
+                    incumbent_uncertainty=float(
+                        incumbent_before.sem
+                    ),
+                    accepted=bool(
+                        accepted
+                    ),
+                )
+
+                if accepted:
                     line_best_point = (
                         candidate_point
                     )

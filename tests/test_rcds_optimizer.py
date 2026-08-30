@@ -1080,3 +1080,133 @@ def test_rcds_trace_groundwork_records_real_evaluations():
         )
     )
 
+
+def test_rcds_trace_records_grid_line_search_decisions():
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "x",
+                0.0,
+                1.0,
+            ),
+        ),
+        initial_point=(
+            0.2,
+        ),
+        maximize=True,
+    )
+
+    def evaluator(
+        point,
+    ):
+        x = point[
+            0
+        ]
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                -(
+                    x
+                    - 0.8
+                ) ** 2
+            ),
+            sem=0.01,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=3,
+                max_evaluations=50,
+                line_samples=5,
+                line_half_width=1.0,
+                stall_iterations=2,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    samples = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "line_search_sample"
+        )
+    )
+
+    assert samples
+
+    assert all(
+        event[
+            "source"
+        ]
+        == "grid"
+        for event
+        in samples
+    )
+
+    for event in samples:
+        assert (
+            len(
+                event[
+                    "normalized_candidate"
+                ]
+            )
+            == 1
+        )
+
+        assert (
+            len(
+                event[
+                    "physical_candidate"
+                ]
+            )
+            == 1
+        )
+
+        assert (
+            len(
+                event[
+                    "direction"
+                ]
+            )
+            == 1
+        )
+
+        assert isinstance(
+            event[
+                "accepted"
+            ],
+            bool,
+        )
+
+        assert (
+            event[
+                "uncertainty"
+            ]
+            == pytest.approx(
+                0.01
+            )
+        )
+
+        assert (
+            "incumbent_objective"
+            in event
+        )
+
+        assert (
+            "incumbent_uncertainty"
+            in event
+        )
+
