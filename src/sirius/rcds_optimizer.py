@@ -1325,6 +1325,24 @@ class RobustConjugateDirectionOptimizer:
                         new_direction
                     )
 
+                    record(
+                        "direction_replaced",
+                        iteration=int(
+                            iteration
+                        ),
+                        direction_index=int(
+                            replace_direction_index
+                        ),
+                        new_direction=tuple(
+                            float(value)
+                            for value
+                            in new_direction
+                        ),
+                        displacement_norm=float(
+                            displacement_norm
+                        ),
+                    )
+
                     if problem.is_better(
                         current_evaluation,
                         best_evaluation,

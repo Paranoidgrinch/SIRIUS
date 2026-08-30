@@ -910,6 +910,61 @@ def test_rcds_exports_learned_directions():
             abs=1e-12,
         )
 
+    direction_events = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "direction_replaced"
+        )
+    )
+
+    assert (
+        len(
+            direction_events
+        )
+        == len(
+            learned
+        )
+    )
+
+    for event, direction in zip(
+        direction_events,
+        learned,
+    ):
+        assert event[
+            "new_direction"
+        ] == pytest.approx(
+            direction
+        )
+
+        assert (
+            0
+            <= event[
+                "direction_index"
+            ]
+            < problem.dimension
+        )
+
+        assert (
+            event[
+                "iteration"
+            ]
+            >= 1
+        )
+
+        assert (
+            event[
+                "displacement_norm"
+            ]
+            > 0.0
+        )
+
 
 def test_rcds_trace_groundwork_records_real_evaluations():
     problem = OptimizationProblem(
