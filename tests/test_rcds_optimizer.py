@@ -684,3 +684,165 @@ def test_rcds_does_not_accept_statistically_indistinguishable_gain():
         )
     )
 
+def test_rcds_exports_learned_directions():
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "x",
+                0.0,
+                1.0,
+            ),
+            OptimizationAxis(
+                "y",
+                0.0,
+                1.0,
+            ),
+        ),
+        initial_point=(
+            0.15,
+            0.85,
+        ),
+        maximize=True,
+    )
+
+    optimum = (
+        0.75,
+        0.25,
+    )
+
+    def evaluator(
+        point,
+    ):
+        x, y = point
+
+        u = (
+            (
+                x
+                - optimum[0]
+            )
+            + 0.65
+            * (
+                y
+                - optimum[1]
+            )
+        )
+
+        v = (
+            -0.65
+            * (
+                x
+                - optimum[0]
+            )
+            + (
+                y
+                - optimum[1]
+            )
+        )
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                1.0
+                - 2.0
+                * u
+                * u
+                - 0.6
+                * v
+                * v
+            ),
+            sem=0.0,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=8,
+                max_evaluations=250,
+                line_samples=7,
+                line_half_width=1.0,
+                stall_iterations=2,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    assert (
+        result.optimizer_version
+        == "1.0"
+    )
+
+    assert (
+        result.metadata[
+            "axis_names"
+        ]
+        == (
+            "x",
+            "y",
+        )
+    )
+
+    learned = result.metadata[
+        "learned_directions_normalized"
+    ]
+
+    final_directions = result.metadata[
+        "final_directions_normalized"
+    ]
+
+    assert learned
+
+    assert (
+        len(
+            final_directions
+        )
+        == problem.dimension
+    )
+
+    for direction in learned:
+        assert (
+            len(
+                direction
+            )
+            == problem.dimension
+        )
+
+        norm = math.sqrt(
+            sum(
+                component
+                * component
+                for component
+                in direction
+            )
+        )
+
+        assert norm == pytest.approx(
+            1.0,
+            abs=1e-12,
+        )
+
+    for direction in final_directions:
+        assert (
+            len(
+                direction
+            )
+            == problem.dimension
+        )
+
+        norm = math.sqrt(
+            sum(
+                component
+                * component
+                for component
+                in direction
+            )
+        )
+
+        assert norm == pytest.approx(
+            1.0,
+            abs=1e-12,
+        )
+

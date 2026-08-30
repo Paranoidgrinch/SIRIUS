@@ -458,6 +458,7 @@ class RobustConjugateDirectionOptimizer:
     """
 
     name = "rcds"
+    version = "1.0"
 
     def __init__(
         self,
@@ -480,6 +481,13 @@ class RobustConjugateDirectionOptimizer:
 
         history: list[
             ObjectiveEvaluation
+        ] = []
+
+        learned_directions: list[
+            tuple[
+                float,
+                ...
+            ]
         ] = []
 
         cache: dict[
@@ -1000,6 +1008,10 @@ class RobustConjugateDirectionOptimizer:
                         new_direction
                     )
 
+                    learned_directions.append(
+                        new_direction
+                    )
+
                     if problem.is_better(
                         current_evaluation,
                         best_evaluation,
@@ -1058,6 +1070,22 @@ class RobustConjugateDirectionOptimizer:
             termination_reason=(
                 termination_reason
             ),
+            optimizer_version=(
+                self.version
+            ),
+            metadata={
+                "axis_names": tuple(
+                    axis.name
+                    for axis
+                    in problem.axes
+                ),
+                "learned_directions_normalized": tuple(
+                    learned_directions
+                ),
+                "final_directions_normalized": tuple(
+                    directions
+                ),
+            },
         )
 
 

@@ -345,6 +345,15 @@ class OptimizationResult:
     iterations: int
     termination_reason: str
 
+    optimizer_version: str | None = None
+
+    metadata: Mapping[
+        str,
+        Any,
+    ] = field(
+        default_factory=dict
+    )
+
     @property
     def evaluations(
         self,
