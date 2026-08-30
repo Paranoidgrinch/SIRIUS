@@ -1848,3 +1848,189 @@ def test_rcds_trace_records_cache_hits():
             == problem.dimension
         )
 
+
+def test_rcds_trace_records_iteration_completion():
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "scaled",
+                10.0,
+                20.0,
+            ),
+        ),
+        initial_point=(
+            12.0,
+        ),
+        maximize=True,
+    )
+
+    def evaluator(
+        point,
+    ):
+        x = point[
+            0
+        ]
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                -(
+                    x
+                    - 16.0
+                ) ** 2
+            ),
+            sem=0.02,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=3,
+                max_evaluations=200,
+                line_samples=5,
+                line_half_width=0.5,
+                stall_iterations=2,
+                parabolic_refinement=False,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    events = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "iteration_completed"
+        )
+    )
+
+    assert events
+
+    assert (
+        len(
+            events
+        )
+        == result.iterations
+    )
+
+    assert tuple(
+        event[
+            "iteration"
+        ]
+        for event
+        in events
+    ) == tuple(
+        range(
+            1,
+            result.iterations + 1,
+        )
+    )
+
+    for event in events:
+        assert (
+            len(
+                event[
+                    "normalized_point"
+                ]
+            )
+            == problem.dimension
+        )
+
+        assert (
+            len(
+                event[
+                    "physical_point"
+                ]
+            )
+            == problem.dimension
+        )
+
+        normalized = event[
+            "normalized_point"
+        ][
+            0
+        ]
+
+        physical = event[
+            "physical_point"
+        ][
+            0
+        ]
+
+        assert physical == pytest.approx(
+            10.0
+            + 10.0
+            * normalized
+        )
+
+        assert isinstance(
+            event[
+                "improved"
+            ],
+            bool,
+        )
+
+        assert (
+            event[
+                "stall_count"
+            ]
+            >= 0
+        )
+
+        assert (
+            event[
+                "evaluations"
+            ]
+            >= 1
+        )
+
+        assert (
+            event[
+                "uncertainty"
+            ]
+            == pytest.approx(
+                0.02
+            )
+        )
+
+    assert (
+        events[
+            -1
+        ][
+            "evaluations"
+        ]
+        == result.evaluations
+    )
+
+    assert (
+        events[
+            -1
+        ][
+            "physical_point"
+        ]
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    assert (
+        events[
+            -1
+        ][
+            "objective"
+        ]
+        == pytest.approx(
+            result.best_evaluation.value
+        )
+    )
+

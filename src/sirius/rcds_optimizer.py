@@ -1367,6 +1367,40 @@ class RobustConjugateDirectionOptimizer:
                 else:
                     stall_count += 1
 
+                record(
+                    "iteration_completed",
+                    iteration=int(
+                        iteration
+                    ),
+                    normalized_point=tuple(
+                        float(value)
+                        for value
+                        in current_point
+                    ),
+                    physical_point=tuple(
+                        float(value)
+                        for value
+                        in current_evaluation.point
+                    ),
+                    objective=float(
+                        current_evaluation.value
+                    ),
+                    uncertainty=float(
+                        current_evaluation.sem
+                    ),
+                    improved=bool(
+                        improved_iteration
+                    ),
+                    stall_count=int(
+                        stall_count
+                    ),
+                    evaluations=int(
+                        len(
+                            history
+                        )
+                    ),
+                )
+
                 if (
                     stall_count
                     >= policy.stall_iterations
