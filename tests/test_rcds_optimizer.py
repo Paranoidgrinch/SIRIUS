@@ -280,6 +280,70 @@ def test_rcds_never_evaluates_static_unsafe_candidate():
         + 1e-12
     )
 
+    skipped = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "candidate_skipped"
+        )
+    )
+
+    assert skipped
+
+    assert all(
+        event[
+            "reason"
+        ]
+        == "problem_rejected"
+        for event
+        in skipped
+    )
+
+    assert all(
+        not safe(
+            event[
+                "physical_point"
+            ]
+        )
+        for event
+        in skipped
+    )
+
+    for event in skipped:
+        assert (
+            len(
+                event[
+                    "normalized_point"
+                ]
+            )
+            == problem.dimension
+        )
+
+        assert (
+            len(
+                event[
+                    "physical_point"
+                ]
+            )
+            == problem.dimension
+        )
+
+        assert all(
+            0.0
+            <= coordinate
+            <= 1.0
+            for coordinate
+            in event[
+                "normalized_point"
+            ]
+        )
+
 
 def test_differently_scaled_physical_axes_are_normalized():
     problem = OptimizationProblem(

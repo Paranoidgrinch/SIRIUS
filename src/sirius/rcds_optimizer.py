@@ -553,6 +553,21 @@ class RobustConjugateDirectionOptimizer:
             if not problem.is_allowed(
                 physical_point
             ):
+                record(
+                    "candidate_skipped",
+                    normalized_point=tuple(
+                        float(value)
+                        for value
+                        in normalized_point
+                    ),
+                    physical_point=tuple(
+                        float(value)
+                        for value
+                        in physical_point
+                    ),
+                    reason="problem_rejected",
+                )
+
                 return None
 
             if (
