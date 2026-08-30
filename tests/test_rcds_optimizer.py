@@ -846,3 +846,237 @@ def test_rcds_exports_learned_directions():
             abs=1e-12,
         )
 
+
+def test_rcds_trace_groundwork_records_real_evaluations():
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "scaled",
+                10.0,
+                20.0,
+            ),
+        ),
+        initial_point=(
+            12.0,
+        ),
+        maximize=True,
+    )
+
+    def evaluator(
+        point,
+    ):
+        x = point[
+            0
+        ]
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                -(
+                    x
+                    - 14.0
+                ) ** 2
+            ),
+            sem=0.05,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=3,
+                max_evaluations=50,
+                line_samples=5,
+                line_half_width=1.0,
+                stall_iterations=2,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    trace = result.metadata[
+        "trace"
+    ]
+
+    assert isinstance(
+        trace,
+        tuple,
+    )
+
+    assert (
+        trace[
+            0
+        ][
+            "event_type"
+        ]
+        == "optimizer_started"
+    )
+
+    assert (
+        trace[
+            -1
+        ][
+            "event_type"
+        ]
+        == "optimizer_terminated"
+    )
+
+    started = trace[
+        0
+    ]
+
+    assert (
+        started[
+            "optimizer_name"
+        ]
+        == result.optimizer_name
+    )
+
+    assert (
+        started[
+            "optimizer_version"
+        ]
+        == result.optimizer_version
+    )
+
+    assert (
+        started[
+            "axis_names"
+        ]
+        == (
+            "scaled",
+        )
+    )
+
+    assert started[
+        "initial_normalized_point"
+    ] == pytest.approx(
+        (
+            0.2,
+        )
+    )
+
+    assert started[
+        "initial_physical_point"
+    ] == pytest.approx(
+        (
+            12.0,
+        )
+    )
+
+    evaluation_events = tuple(
+        event
+        for event
+        in trace
+        if (
+            event[
+                "event_type"
+            ]
+            == "evaluation"
+        )
+    )
+
+    assert (
+        len(
+            evaluation_events
+        )
+        == result.evaluations
+    )
+
+    first_evaluation = (
+        evaluation_events[
+            0
+        ]
+    )
+
+    assert first_evaluation[
+        "normalized_point"
+    ] == pytest.approx(
+        (
+            0.2,
+        )
+    )
+
+    assert first_evaluation[
+        "physical_point"
+    ] == pytest.approx(
+        (
+            12.0,
+        )
+    )
+
+    assert (
+        first_evaluation[
+            "objective"
+        ]
+        == pytest.approx(
+            result.initial_evaluation.value
+        )
+    )
+
+    assert (
+        first_evaluation[
+            "uncertainty"
+        ]
+        == pytest.approx(
+            0.05
+        )
+    )
+
+    assert (
+        first_evaluation[
+            "safe"
+        ]
+        is True
+    )
+
+    assert (
+        first_evaluation[
+            "below_noise_floor"
+        ]
+        is False
+    )
+
+    terminated = trace[
+        -1
+    ]
+
+    assert (
+        terminated[
+            "termination_reason"
+        ]
+        == result.termination_reason
+    )
+
+    assert (
+        terminated[
+            "evaluations"
+        ]
+        == result.evaluations
+    )
+
+    assert (
+        terminated[
+            "iterations"
+        ]
+        == result.iterations
+    )
+
+    assert terminated[
+        "physical_best_point"
+    ] == pytest.approx(
+        result.best_evaluation.point
+    )
+
+    assert (
+        terminated[
+            "objective"
+        ]
+        == pytest.approx(
+            result.best_evaluation.value
+        )
+    )
+

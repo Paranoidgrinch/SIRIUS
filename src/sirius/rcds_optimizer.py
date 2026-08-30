@@ -490,6 +490,24 @@ class RobustConjugateDirectionOptimizer:
             ]
         ] = []
 
+        trace: list[
+            dict[
+                str,
+                object,
+            ]
+        ] = []
+
+        def record(
+            event_type: str,
+            **data: object,
+        ) -> None:
+            trace.append(
+                {
+                    "event_type": event_type,
+                    **data,
+                }
+            )
+
         cache: dict[
             tuple[
                 float,
@@ -575,6 +593,32 @@ class RobustConjugateDirectionOptimizer:
                 evaluation
             )
 
+            record(
+                "evaluation",
+                normalized_point=tuple(
+                    float(value)
+                    for value
+                    in normalized_point
+                ),
+                physical_point=tuple(
+                    float(value)
+                    for value
+                    in evaluation.point
+                ),
+                objective=float(
+                    evaluation.value
+                ),
+                uncertainty=float(
+                    evaluation.sem
+                ),
+                safe=bool(
+                    evaluation.safe
+                ),
+                below_noise_floor=bool(
+                    evaluation.below_noise_floor
+                ),
+            )
+
             cache[
                 key
             ] = evaluation
@@ -586,6 +630,33 @@ class RobustConjugateDirectionOptimizer:
                 problem,
                 problem.initial_point,
             )
+        )
+
+        record(
+            "optimizer_started",
+            optimizer_name=self.name,
+            optimizer_version=self.version,
+            axis_names=tuple(
+                axis.name
+                for axis
+                in problem.axes
+            ),
+            initial_normalized_point=tuple(
+                float(value)
+                for value
+                in current_point
+            ),
+            initial_physical_point=tuple(
+                float(value)
+                for value
+                in problem.initial_point
+            ),
+            max_iterations=int(
+                policy.max_iterations
+            ),
+            max_evaluations=int(
+                policy.max_evaluations
+            ),
         )
 
         initial_evaluation = (
@@ -1051,6 +1122,37 @@ class RobustConjugateDirectionOptimizer:
                 "max_evaluations"
             )
 
+        record(
+            "optimizer_terminated",
+            termination_reason=(
+                termination_reason
+            ),
+            evaluations=int(
+                len(
+                    history
+                )
+            ),
+            iterations=int(
+                iterations_completed
+            ),
+            normalized_best_point=tuple(
+                float(value)
+                for value
+                in best_point
+            ),
+            physical_best_point=tuple(
+                float(value)
+                for value
+                in best_evaluation.point
+            ),
+            objective=float(
+                best_evaluation.value
+            ),
+            uncertainty=float(
+                best_evaluation.sem
+            ),
+        )
+
         return OptimizationResult(
             optimizer_name=(
                 self.name
@@ -1084,6 +1186,9 @@ class RobustConjugateDirectionOptimizer:
                 ),
                 "final_directions_normalized": tuple(
                     directions
+                ),
+                "trace": tuple(
+                    trace
                 ),
             },
         )
