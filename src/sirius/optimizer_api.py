@@ -12,6 +12,15 @@ from typing import (
     Protocol,
 )
 
+from sirius.comparison import (
+    ComparisonDecision,
+    ComparisonPolicy,
+)
+from sirius.objective import (
+    ScalarEstimate,
+    compare_estimates,
+)
+
 
 @dataclass(frozen=True)
 class OptimizationAxis:
@@ -444,3 +453,71 @@ def uncertainty_aware_comparator(
         )
 
     return compare
+
+
+def comparison_policy_comparator(
+    *,
+    policy: ComparisonPolicy,
+) -> ComparisonFunction:
+    """
+    Adapt SIRIUS' canonical scalar ComparisonPolicy to the generic
+    optimizer comparison interface.
+
+    This comparator is intended for higher-is-better scalar objectives,
+    especially Cup-1-normalized beam transmission.
+
+    Reusing compare_estimates() ensures that generic optimizers and the
+    existing transmission scanners make identical decisions about
+    measurement uncertainty, practical improvement thresholds, and the
+    below-noise-floor state.
+
+    Hardware safety remains authoritative outside this comparison layer.
+    """
+
+    def compare(
+        candidate: ObjectiveEvaluation,
+        incumbent: ObjectiveEvaluation,
+    ) -> bool:
+        if not candidate.safe:
+            return False
+
+        if not incumbent.safe:
+            return True
+
+        baseline = ScalarEstimate(
+            value=float(
+                incumbent.value
+            ),
+            sem=float(
+                incumbent.sem
+            ),
+            below_noise_floor=bool(
+                incumbent.below_noise_floor
+            ),
+        )
+
+        challenger = ScalarEstimate(
+            value=float(
+                candidate.value
+            ),
+            sem=float(
+                candidate.sem
+            ),
+            below_noise_floor=bool(
+                candidate.below_noise_floor
+            ),
+        )
+
+        result = compare_estimates(
+            baseline,
+            challenger,
+            policy,
+        )
+
+        return (
+            result.decision
+            == ComparisonDecision.BETTER
+        )
+
+    return compare
+

@@ -2,10 +2,14 @@ import math
 
 import pytest
 
+from sirius.comparison import (
+    ComparisonPolicy,
+)
 from sirius.optimizer_api import (
     ObjectiveEvaluation,
     OptimizationAxis,
     OptimizationProblem,
+    comparison_policy_comparator,
     uncertainty_aware_comparator,
 )
 from sirius.rcds_optimizer import (
@@ -508,3 +512,175 @@ def test_optimizer_requires_no_training_data():
         result.best_evaluation.value
         > result.initial_evaluation.value
     )
+
+
+def test_comparison_policy_comparator_uses_canonical_uncertainty_semantics():
+    compare = comparison_policy_comparator(
+        policy=ComparisonPolicy(
+            uncertainty_multiple=2.0,
+            minimum_absolute_improvement_a=0.0,
+            minimum_relative_improvement=0.0,
+        )
+    )
+
+    incumbent = ObjectiveEvaluation(
+        point=(0.0,),
+        value=1.0,
+        sem=0.1,
+    )
+
+    statistically_indistinguishable = (
+        ObjectiveEvaluation(
+            point=(0.1,),
+            value=1.1,
+            sem=0.1,
+        )
+    )
+
+    clear_improvement = (
+        ObjectiveEvaluation(
+            point=(0.2,),
+            value=1.5,
+            sem=0.1,
+        )
+    )
+
+    assert (
+        compare(
+            statistically_indistinguishable,
+            incumbent,
+        )
+        is False
+    )
+
+    assert (
+        compare(
+            clear_improvement,
+            incumbent,
+        )
+        is True
+    )
+
+
+def test_comparison_policy_comparator_preserves_noise_floor_semantics():
+    compare = comparison_policy_comparator(
+        policy=ComparisonPolicy(
+            uncertainty_multiple=2.0,
+            minimum_absolute_improvement_a=0.0,
+            minimum_relative_improvement=0.0,
+        )
+    )
+
+    below_noise = ObjectiveEvaluation(
+        point=(0.0,),
+        value=0.001,
+        sem=0.0001,
+        below_noise_floor=True,
+    )
+
+    detected_beam = ObjectiveEvaluation(
+        point=(0.1,),
+        value=0.01,
+        sem=0.0001,
+        below_noise_floor=False,
+    )
+
+    another_below_noise = ObjectiveEvaluation(
+        point=(0.2,),
+        value=0.002,
+        sem=0.0001,
+        below_noise_floor=True,
+    )
+
+    assert (
+        compare(
+            detected_beam,
+            below_noise,
+        )
+        is True
+    )
+
+    assert (
+        compare(
+            another_below_noise,
+            below_noise,
+        )
+        is False
+    )
+
+
+def test_rcds_does_not_accept_statistically_indistinguishable_gain():
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "x",
+                0.0,
+                1.0,
+            ),
+        ),
+        initial_point=(
+            0.5,
+        ),
+        maximize=True,
+        comparison=(
+            comparison_policy_comparator(
+                policy=ComparisonPolicy(
+                    uncertainty_multiple=2.0,
+                    minimum_absolute_improvement_a=0.0,
+                    minimum_relative_improvement=0.0,
+                )
+            )
+        ),
+    )
+
+    def evaluator(
+        point,
+    ):
+        x = point[0]
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                1.0
+                + 0.05
+                * (
+                    x
+                    - 0.5
+                )
+            ),
+            sem=0.10,
+        )
+
+    optimizer = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=3,
+                max_evaluations=50,
+                line_samples=7,
+                line_half_width=1.0,
+                stall_iterations=2,
+            )
+        )
+    )
+
+    result = optimizer.optimize(
+        problem,
+        evaluator,
+    )
+
+    assert (
+        result.best_evaluation.point
+        == pytest.approx(
+            (0.5,)
+        )
+    )
+
+    assert (
+        result.best_evaluation.value
+        == pytest.approx(
+            result.initial_evaluation.value
+        )
+    )
+
