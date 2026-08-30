@@ -539,6 +539,47 @@ class RobustConjugateDirectionOptimizer:
             )
 
             if key in cache:
+                record(
+                    "cache_hit",
+                    cache_key=tuple(
+                        float(value)
+                        for value
+                        in key
+                    ),
+                    normalized_point=tuple(
+                        float(value)
+                        for value
+                        in normalized_point
+                    ),
+                    physical_point=tuple(
+                        float(value)
+                        for value
+                        in cache[
+                            key
+                        ].point
+                    ),
+                    objective=float(
+                        cache[
+                            key
+                        ].value
+                    ),
+                    uncertainty=float(
+                        cache[
+                            key
+                        ].sem
+                    ),
+                    safe=bool(
+                        cache[
+                            key
+                        ].safe
+                    ),
+                    below_noise_floor=bool(
+                        cache[
+                            key
+                        ].below_noise_floor
+                    ),
+                )
+
                 return cache[
                     key
                 ]

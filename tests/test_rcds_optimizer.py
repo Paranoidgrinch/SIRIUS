@@ -1614,3 +1614,182 @@ def test_rcds_trace_brackets_line_searches():
             )
         )
 
+
+def test_rcds_trace_records_cache_hits():
+    evaluator_calls = []
+
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "x",
+                0.0,
+                1.0,
+            ),
+        ),
+        initial_point=(
+            0.5,
+        ),
+        maximize=True,
+    )
+
+    def evaluator(
+        point,
+    ):
+        evaluator_calls.append(
+            tuple(
+                point
+            )
+        )
+
+        x = point[
+            0
+        ]
+
+        return ObjectiveEvaluation(
+            point=tuple(
+                point
+            ),
+            value=(
+                -(
+                    x
+                    - 0.8
+                ) ** 2
+            ),
+            sem=0.02,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=1,
+                max_evaluations=20,
+                line_samples=3,
+                line_half_width=0.5,
+                stall_iterations=1,
+                parabolic_refinement=False,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    cache_hits = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "cache_hit"
+        )
+    )
+
+    assert cache_hits
+
+    # Cache reuse must not count as another real evaluation.
+    assert (
+        len(
+            evaluator_calls
+        )
+        == result.evaluations
+    )
+
+    initial_hits = tuple(
+        event
+        for event
+        in cache_hits
+        if event[
+            "physical_point"
+        ] == pytest.approx(
+            (
+                0.5,
+            )
+        )
+    )
+
+    assert initial_hits
+
+    initial_hit = initial_hits[
+        0
+    ]
+
+    assert initial_hit[
+        "normalized_point"
+    ] == pytest.approx(
+        (
+            0.5,
+        )
+    )
+
+    assert initial_hit[
+        "cache_key"
+    ] == pytest.approx(
+        (
+            0.5,
+        )
+    )
+
+    assert (
+        initial_hit[
+            "objective"
+        ]
+        == pytest.approx(
+            result.initial_evaluation.value
+        )
+    )
+
+    assert (
+        initial_hit[
+            "uncertainty"
+        ]
+        == pytest.approx(
+            0.02
+        )
+    )
+
+    assert (
+        initial_hit[
+            "safe"
+        ]
+        is True
+    )
+
+    assert (
+        initial_hit[
+            "below_noise_floor"
+        ]
+        is False
+    )
+
+    for event in cache_hits:
+        assert (
+            len(
+                event[
+                    "cache_key"
+                ]
+            )
+            == problem.dimension
+        )
+
+        assert (
+            len(
+                event[
+                    "normalized_point"
+                ]
+            )
+            == problem.dimension
+        )
+
+        assert (
+            len(
+                event[
+                    "physical_point"
+                ]
+            )
+            == problem.dimension
+        )
+
