@@ -2034,3 +2034,117 @@ def test_rcds_trace_records_iteration_completion():
         )
     )
 
+
+def test_rcds_can_disable_cached_evaluation_reuse():
+    evaluator_calls = []
+
+    problem = OptimizationProblem(
+        axes=(
+            OptimizationAxis(
+                "x",
+                0.0,
+                1.0,
+            ),
+        ),
+        initial_point=(
+            0.5,
+        ),
+        maximize=True,
+    )
+
+    def evaluator(
+        point,
+    ):
+        point = tuple(
+            point
+        )
+
+        evaluator_calls.append(
+            point
+        )
+
+        x = point[
+            0
+        ]
+
+        return ObjectiveEvaluation(
+            point=point,
+            value=(
+                -(
+                    x
+                    - 0.8
+                ) ** 2
+            ),
+            sem=0.02,
+        )
+
+    result = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=1,
+                max_evaluations=20,
+                line_samples=3,
+                line_half_width=0.5,
+                stall_iterations=1,
+                parabolic_refinement=False,
+                reuse_cached_evaluations=False,
+            )
+        ).optimize(
+            problem,
+            evaluator,
+        )
+    )
+
+    # The line grid contains alpha=0, so the current physical
+    # point is deliberately measured again when reuse is off.
+    repeated_initial = tuple(
+        point
+        for point
+        in evaluator_calls
+        if point == (
+            0.5,
+        )
+    )
+
+    assert (
+        len(
+            repeated_initial
+        )
+        >= 2
+    )
+
+    assert (
+        len(
+            evaluator_calls
+        )
+        == result.evaluations
+    )
+
+    cache_hits = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "cache_hit"
+        )
+    )
+
+    assert (
+        cache_hits
+        == ()
+    )
+
+
+def test_rcds_cache_reuse_policy_requires_bool():
+    with pytest.raises(
+        TypeError,
+        match="reuse_cached_evaluations",
+    ):
+        RCDSPolicy(
+            reuse_cached_evaluations=1,
+        )

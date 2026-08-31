@@ -45,6 +45,8 @@ class RCDSPolicy:
 
     parabolic_refinement: bool = True
 
+    reuse_cached_evaluations: bool = True
+
     def __post_init__(self) -> None:
         if self.max_iterations < 1:
             raise ValueError(
@@ -91,6 +93,14 @@ class RCDSPolicy:
         if self.stall_iterations < 1:
             raise ValueError(
                 "stall_iterations must be at least 1"
+            )
+
+        if not isinstance(
+            self.reuse_cached_evaluations,
+            bool,
+        ):
+            raise TypeError(
+                "reuse_cached_evaluations must be a bool"
             )
 
 
@@ -538,7 +548,7 @@ class RobustConjugateDirectionOptimizer:
                 normalized_point
             )
 
-            if key in cache:
+            if policy.reuse_cached_evaluations and key in cache:
                 record(
                     "cache_hit",
                     cache_key=tuple(
@@ -675,9 +685,10 @@ class RobustConjugateDirectionOptimizer:
                 ),
             )
 
-            cache[
-                key
-            ] = evaluation
+            if policy.reuse_cached_evaluations:
+                cache[
+                    key
+                ] = evaluation
 
             return evaluation
 
