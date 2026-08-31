@@ -278,3 +278,101 @@ def test_runtime_target_q_respects_rfq_stability_limit():
             rfq_q_policy=object(),
             target_q=0.95,
         )
+
+
+def test_runtime_enables_bounded_cup2_rcds_by_default():
+    resources = SiriusRuntimeResources(
+        profile=object(),
+        tracker=object(),
+        settling_policies={},
+        measurement_policy=(
+            MeasurementPolicy()
+        ),
+        comparison_policy=(
+            ComparisonPolicy()
+        ),
+        rfq_hardware=object(),
+        lc_candidates=(),
+        rfq_matching_policy=object(),
+        rfq_q_policy=object(),
+        target_q=0.45,
+    )
+
+    stage_resources = (
+        resources
+        .to_default_stage_resources()
+        .for_stage(
+            SiriusStage.CUP2
+        )
+    )
+
+    policy = stage_resources[
+        "primary_rcds_policy"
+    ]
+
+    assert (
+        policy.max_iterations
+        == 2
+    )
+
+    assert (
+        policy.max_evaluations
+        == 73
+    )
+
+    assert (
+        policy.line_samples
+        == 7
+    )
+
+    assert (
+        policy.reuse_cached_evaluations
+        is False
+    )
+
+
+def test_runtime_allows_explicit_legacy_cup2_override():
+    resources = SiriusRuntimeResources(
+        profile=object(),
+        tracker=object(),
+        settling_policies={},
+        measurement_policy=(
+            MeasurementPolicy()
+        ),
+        comparison_policy=(
+            ComparisonPolicy()
+        ),
+        rfq_hardware=object(),
+        lc_candidates=(),
+        rfq_matching_policy=object(),
+        rfq_q_policy=object(),
+        target_q=0.45,
+        cup2={
+            "primary_rcds_policy":
+                None,
+            "runtime_test_marker":
+                "legacy",
+        },
+    )
+
+    stage_resources = (
+        resources
+        .to_default_stage_resources()
+        .for_stage(
+            SiriusStage.CUP2
+        )
+    )
+
+    assert (
+        stage_resources[
+            "primary_rcds_policy"
+        ]
+        is None
+    )
+
+    assert (
+        stage_resources[
+            "runtime_test_marker"
+        ]
+        == "legacy"
+    )

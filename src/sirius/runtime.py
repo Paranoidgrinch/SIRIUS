@@ -13,6 +13,9 @@ from typing import (
 from sirius.comparison import (
     ComparisonPolicy,
 )
+from sirius.cup2_optimizer import (
+    cup2_primary_rcds_production_policy,
+)
 from sirius.default_stages import (
     DefaultStageResources,
     build_default_stages,
@@ -185,6 +188,18 @@ class SiriusRuntimeResources:
                 self.comparison_policy,
         }
 
+        cup2 = {
+            "primary_rcds_policy": (
+                cup2_primary_rcds_production_policy()
+            ),
+
+            # Explicit runtime resources come last and
+            # therefore override the default, including None.
+            **dict(
+                self.cup2
+            ),
+        }
+
         cup3 = {
             "rfq_hardware":
                 self.rfq_hardware,
@@ -215,9 +230,7 @@ class SiriusRuntimeResources:
                 self.cup1
             ),
 
-            cup2=dict(
-                self.cup2
-            ),
+            cup2=cup2,
 
             cup3=cup3,
 
