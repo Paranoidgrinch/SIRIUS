@@ -74,7 +74,7 @@ CUP2_REQUIRED_PARAMETERS = (
 )
 
 
-CUP2_PRIMARY_RCDS_MAX_CUP2_MEASUREMENTS = 66
+CUP2_PRIMARY_RCDS_MAX_CUP2_MEASUREMENTS = 74
 
 
 class Cup2OptimizationError(RuntimeError):
@@ -172,12 +172,13 @@ def cup2_primary_rcds_production_policy(
 
     return RCDSPolicy(
         max_iterations=2,
-        max_evaluations=65,
+        max_evaluations=73,
         line_samples=7,
         line_half_width=0.35,
-        minimum_direction_norm=1e-06,
+        minimum_direction_norm=1e-6,
         stall_iterations=2,
         parabolic_refinement=True,
+        reuse_cached_evaluations=False,
     )
 
 
