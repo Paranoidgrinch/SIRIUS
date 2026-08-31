@@ -1991,3 +1991,163 @@ def test_primary_rcds_full_mock_integration_loop(
             )
             is False
         )
+
+    # ------------------------------------------------------------
+    # Best-point confirmation contract.
+    #
+    # optimizer.optimize() leaves the physical machine at the last
+    # real evaluation. The best point may be an earlier evaluation.
+    # Production integration must therefore explicitly return to the
+    # best point and freshly measure it.
+    # ------------------------------------------------------------
+
+    last_state_before_confirmation = (
+        evaluator.working_state
+    )
+
+    transition_count_before_confirmation = len(
+        transition_calls
+    )
+
+    assert (
+        transition_count_before_confirmation
+        == result.evaluations
+    )
+
+    confirmation = (
+        module._confirm_primary_rcds_best(
+            evaluator,
+            result,
+        )
+    )
+
+    # Exactly one additional REAL safe evaluator transition.
+    assert (
+        len(
+            transition_calls
+        )
+        == transition_count_before_confirmation
+        + 1
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == result.evaluations
+        + 1
+    )
+
+    (
+        confirmation_source,
+        confirmation_target,
+    ) = transition_calls[
+        -1
+    ]
+
+    assert (
+        confirmation_source.state_id
+        == last_state_before_confirmation.state_id
+    )
+
+    # The fresh evaluator result must report the RCDS best point.
+    assert (
+        confirmation.point
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    # And the ACTUAL physical command state must now represent
+    # exactly the same reduced [F, A, X2, Y2] point.
+    confirmed_physical_point = reduced_point(
+        evaluator.working_state
+    )
+
+    assert (
+        confirmed_physical_point
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    assert (
+        reduced_point(
+            confirmation_target
+        )
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == confirmation_target.state_id
+    )
+
+    assert (
+        machine[
+            "state"
+        ].state_id
+        == confirmation_target.state_id
+    )
+
+    # Common mode C remains frozen after the return move.
+    confirmed_qpt = module.evaluate_qpt(
+        evaluator.working_state
+    )
+
+    assert (
+        confirmed_qpt.command_coordinates.common_v
+        == pytest.approx(
+            frozen_common_v
+        )
+    )
+
+    # Complete upstream Cup-3 transport remains frozen.
+    for parameter_name in (
+        module.CUP4_FROZEN_UPSTREAM_PARAMETERS
+    ):
+        assert (
+            evaluator.working_state.parameters[
+                parameter_name
+            ]
+            == cup3.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        evaluator.working_state.rfq
+        == cup3.rfq
+    )
+
+    # The best point is still part of the same feasible optimizer
+    # geometry.
+    assert (
+        problem.is_allowed(
+            confirmation.point
+        )
+        is True
+    )
+
+    # The synthetic objective is deterministic. Therefore the fresh
+    # measurement reproduces the original best objective here.
+    #
+    # Real hardware is intentionally NOT required to reproduce the
+    # old value exactly because beam/source drift may occur.
+    assert (
+        confirmation.value
+        == pytest.approx(
+            result.best_evaluation.value
+        )
+    )
+
+    # Confirmation occurs outside the optimizer and must not mutate
+    # OptimizationResult.history.
+    assert (
+        len(
+            result.history
+        )
+        == result.evaluations
+    )
