@@ -1449,3 +1449,545 @@ def test_primary_rcds_evaluator_tracks_actual_machine_state_between_calls(
             target.rfq
             == cup3_state().rfq
         )
+
+
+def test_primary_rcds_full_mock_integration_loop(
+    monkeypatch,
+):
+    from sirius.rcds_optimizer import (
+        RCDSPolicy,
+        RobustConjugateDirectionOptimizer,
+    )
+
+    current = cup4_state()
+    cup3 = cup3_state()
+    source_tracker = tracker()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    optimization_policy = (
+        module.Cup4OptimizationPolicy(
+            steerer_half_width_v=100.0,
+        )
+    )
+
+    comparison_policy = (
+        ComparisonPolicy(
+            uncertainty_multiple=0.0,
+            minimum_absolute_improvement_a=0.0,
+            minimum_relative_improvement=0.0,
+        )
+    )
+
+    # --------------------------------------------------------
+    # REAL Cup-4 RCDS problem.
+    # --------------------------------------------------------
+
+    problem = (
+        module._build_primary_rcds_problem(
+            current,
+            profile,
+            comparison_policy,
+            optimization_policy,
+        )
+    )
+
+    assert (
+        problem.dimension
+        == 4
+    )
+
+    assert tuple(
+        axis.name
+        for axis
+        in problem.axes
+    ) == (
+        module.CUP4_RCDS_AXIS_NAMES
+    )
+
+    # Choose a deterministic optimum exactly one eighth of each
+    # normalized axis away from the starting point.
+    #
+    # For the default QPT geometry this remains comfortably
+    # inside the coupled physical QPT domain.
+    signs = (
+        1.0,
+        1.0,
+        1.0,
+        -1.0,
+    )
+
+    optimum = tuple(
+        float(
+            initial
+        )
+        + sign
+        * 0.125
+        * float(
+            axis.span
+        )
+        for (
+            initial,
+            axis,
+            sign,
+        )
+        in zip(
+            problem.initial_point,
+            problem.axes,
+            signs,
+        )
+    )
+
+    assert (
+        problem.is_allowed(
+            optimum
+        )
+        is True
+    )
+
+    initial_value = tuple(
+        float(
+            value
+        )
+        for value
+        in problem.initial_point
+    )
+
+    assert (
+        optimum
+        != initial_value
+    )
+
+    # --------------------------------------------------------
+    # Mock only the real hardware boundary and current reading.
+    #
+    # The problem builder, RCDS implementation, reduced QPT
+    # conversion, evaluator state tracking and transmission
+    # calculation remain real production code.
+    # --------------------------------------------------------
+
+    machine = {
+        "state": current,
+    }
+
+    transition_calls = []
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        assert (
+            current.state_id
+            == machine[
+                "state"
+            ].state_id
+        )
+
+        assert (
+            select_target_cup
+            is False
+        )
+
+        transition_calls.append(
+            (
+                current,
+                target,
+            )
+        )
+
+        machine[
+            "state"
+        ] = target
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    def reduced_point(
+        state,
+    ):
+        coordinates = (
+            module.evaluate_qpt(
+                state
+            ).command_coordinates
+        )
+
+        return (
+            float(
+                coordinates
+                .global_focus_v
+            ),
+            float(
+                coordinates
+                .asymmetry_v
+            ),
+            float(
+                state.parameters[
+                    "steerer_x2_v"
+                ]
+            ),
+            float(
+                state.parameters[
+                    "steerer_y2_v"
+                ]
+            ),
+        )
+
+    def fake_measure_beam_current(
+        adapter,
+        measurement_policy,
+        *,
+        noise_floor_a=None,
+    ):
+        actual = reduced_point(
+            machine[
+                "state"
+            ]
+        )
+
+        squared_distance = sum(
+            (
+                (
+                    actual_value
+                    - optimum_value
+                )
+                / float(
+                    axis.span
+                )
+            )
+            ** 2
+            for (
+                actual_value,
+                optimum_value,
+                axis,
+            )
+            in zip(
+                actual,
+                optimum,
+                problem.axes,
+            )
+        )
+
+        # Smooth positive deterministic transmission surface.
+        transmission = max(
+            0.05,
+            0.95
+            - 0.50
+            * squared_distance,
+        )
+
+        return measurement(
+            10e-9
+            * transmission
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        fake_measure_beam_current,
+    )
+
+    frozen_common_v = float(
+        module.evaluate_qpt(
+            current
+        ).command_coordinates.common_v
+    )
+
+    evaluator = (
+        module._Cup4PrimaryRCDSEvaluator(
+            adapter=object(),
+            working_state=current,
+            cup3_reference_state=cup3,
+            tracker=source_tracker,
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+            frozen_common_v=(
+                frozen_common_v
+            ),
+        )
+    )
+
+    optimizer = (
+        RobustConjugateDirectionOptimizer(
+            policy=RCDSPolicy(
+                max_iterations=2,
+                max_evaluations=80,
+                line_samples=5,
+                line_half_width=0.25,
+                stall_iterations=2,
+                parabolic_refinement=True,
+                reuse_cached_evaluations=False,
+            )
+        )
+    )
+
+    result = optimizer.optimize(
+        problem,
+        evaluator,
+    )
+
+    # --------------------------------------------------------
+    # REAL RCDS result contract.
+    # --------------------------------------------------------
+
+    assert (
+        result.optimizer_name
+        == "rcds"
+    )
+
+    assert (
+        result.optimizer_version
+        == "1.0"
+    )
+
+    assert (
+        result.evaluations
+        > 1
+    )
+
+    assert (
+        result.best_evaluation.value
+        > result.initial_evaluation.value
+    )
+
+    assert (
+        problem.is_allowed(
+            result.best_evaluation.point
+        )
+        is True
+    )
+
+    assert tuple(
+        result.metadata[
+            "axis_names"
+        ]
+    ) == (
+        module.CUP4_RCDS_AXIS_NAMES
+    )
+
+    # Cache reuse is explicitly disabled in this integration
+    # run, therefore every recorded optimizer evaluation must
+    # correspond to one real evaluator/hardware transition.
+    assert (
+        len(
+            transition_calls
+        )
+        == result.evaluations
+    )
+
+    assert (
+        len(
+            result.history
+        )
+        == result.evaluations
+    )
+
+    # --------------------------------------------------------
+    # Every point that actually reaches the machine must satisfy
+    # BOTH the rectangular optimizer bounds and the coupled QPT
+    # feasibility predicate.
+    # --------------------------------------------------------
+
+    for (
+        evaluation,
+        transition_pair,
+    ) in zip(
+        result.history,
+        transition_calls,
+    ):
+        (
+            transition_source,
+            transition_target,
+        ) = transition_pair
+
+        actual_point = reduced_point(
+            transition_target
+        )
+
+        assert (
+            evaluation.point
+            == pytest.approx(
+                actual_point
+            )
+        )
+
+        assert (
+            problem.is_allowed(
+                actual_point
+            )
+            is True
+        )
+
+        qpt = module.evaluate_qpt(
+            transition_target
+        )
+
+        assert (
+            qpt.command_coordinates.common_v
+            == pytest.approx(
+                frozen_common_v
+            )
+        )
+
+        assert (
+            transition_target.cup
+            == 4
+        )
+
+        assert (
+            transition_target.stage
+            in (
+                None,
+                4,
+            )
+        )
+
+        for parameter_name in (
+            module.CUP4_FROZEN_UPSTREAM_PARAMETERS
+        ):
+            assert (
+                transition_target.parameters[
+                    parameter_name
+                ]
+                == cup3.parameters[
+                    parameter_name
+                ]
+            )
+
+        assert (
+            transition_target.rfq
+            == cup3.rfq
+        )
+
+    # --------------------------------------------------------
+    # Stateful physical-machine chain:
+    #
+    # evaluation N+1 must begin from the observed state left by
+    # evaluation N.
+    # --------------------------------------------------------
+
+    assert (
+        transition_calls[
+            0
+        ][
+            0
+        ].state_id
+        == current.state_id
+    )
+
+    for index in range(
+        1,
+        len(
+            transition_calls
+        ),
+    ):
+        previous_target = (
+            transition_calls[
+                index - 1
+            ][
+                1
+            ]
+        )
+
+        next_source = (
+            transition_calls[
+                index
+            ][
+                0
+            ]
+        )
+
+        assert (
+            next_source.state_id
+            == previous_target.state_id
+        )
+
+    last_target = (
+        transition_calls[
+            -1
+        ][
+            1
+        ]
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == last_target.state_id
+    )
+
+    assert (
+        machine[
+            "state"
+        ].state_id
+        == last_target.state_id
+    )
+
+    # --------------------------------------------------------
+    # Trace contract.
+    # --------------------------------------------------------
+
+    event_types = tuple(
+        event[
+            "event_type"
+        ]
+        for event
+        in result.metadata[
+            "trace"
+        ]
+    )
+
+    for required_event in (
+        "optimizer_started",
+        "evaluation",
+        "line_search_started",
+        "line_search_completed",
+        "iteration_completed",
+        "optimizer_terminated",
+    ):
+        assert (
+            required_event
+            in event_types
+        )
+
+    # If RCDS encounters any coupled-QPT-invalid point, that
+    # point must appear only as candidate_skipped and must never
+    # have reached fake_apply_state().
+    skipped = tuple(
+        event
+        for event
+        in result.metadata[
+            "trace"
+        ]
+        if (
+            event[
+                "event_type"
+            ]
+            == "candidate_skipped"
+        )
+    )
+
+    for event in skipped:
+        assert (
+            problem.is_allowed(
+                tuple(
+                    event[
+                        "physical_point"
+                    ]
+                )
+            )
+            is False
+        )
