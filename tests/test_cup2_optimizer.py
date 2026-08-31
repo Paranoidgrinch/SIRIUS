@@ -2634,3 +2634,119 @@ def test_opt_in_primary_rcds_replaces_primary_scans_but_keeps_einzel(
         ]
         == -17.0
     )
+
+
+def test_cup2_primary_rcds_production_policy_has_derived_measurement_budget():
+    policy = (
+        module.cup2_primary_rcds_production_policy()
+    )
+
+    generic = module.RCDSPolicy()
+
+    # Preserve the current robust generic line-search behavior.
+    assert (
+        policy.line_samples
+        == generic.line_samples
+        == 7
+    )
+
+    assert (
+        policy.line_half_width
+        == pytest.approx(
+            generic.line_half_width
+        )
+    )
+
+    assert (
+        policy.minimum_direction_norm
+        == pytest.approx(
+            generic.minimum_direction_norm
+        )
+    )
+
+    assert (
+        policy.stall_iterations
+        == generic.stall_iterations
+        == 2
+    )
+
+    assert (
+        policy.parabolic_refinement
+        is True
+    )
+
+    # Cup 2 currently has three primary RCDS axes.
+    dimension = len(
+        module.CUP2_PRIMARY_PARAMETERS
+    )
+
+    assert dimension == 3
+
+    # Match the current two-pass Cup-2 optimization depth.
+    assert (
+        policy.max_iterations
+        == module.Cup2OptimizationPolicy().coordinate_passes
+        == 2
+    )
+
+    # Worst-case RCDS structure:
+    #
+    #   dimension coordinate searches
+    #   + one possible conjugate search
+    #
+    # Each line may require at most:
+    #
+    #   line_samples new non-zero grid evaluations
+    #   + one parabolic evaluation
+    #
+    # The alpha=0 origin is already cached.
+    max_line_searches_per_iteration = (
+        dimension
+        + 1
+    )
+
+    max_new_evaluations_per_line = (
+        policy.line_samples
+        + (
+            1
+            if policy.parabolic_refinement
+            else 0
+        )
+    )
+
+    worst_case_optimizer_evaluations = (
+        1
+        + policy.max_iterations
+        * max_line_searches_per_iteration
+        * max_new_evaluations_per_line
+    )
+
+    assert (
+        worst_case_optimizer_evaluations
+        == 65
+    )
+
+    assert (
+        policy.max_evaluations
+        == worst_case_optimizer_evaluations
+    )
+
+    # _confirm_primary_rcds_best() performs exactly one fresh
+    # Cup-2 evaluation after optimizer.optimize().
+    assert (
+        policy.max_evaluations
+        + 1
+        == module.CUP2_PRIMARY_RCDS_MAX_CUP2_MEASUREMENTS
+        == 66
+    )
+
+    # The generic optimizer remains intentionally much broader.
+    assert (
+        generic.max_iterations
+        == 12
+    )
+
+    assert (
+        generic.max_evaluations
+        == 300
+    )

@@ -74,6 +74,9 @@ CUP2_REQUIRED_PARAMETERS = (
 )
 
 
+CUP2_PRIMARY_RCDS_MAX_CUP2_MEASUREMENTS = 66
+
+
 class Cup2OptimizationError(RuntimeError):
     pass
 
@@ -161,6 +164,21 @@ class Cup2OptimizationPolicy:
             raise ValueError(
                 "coordinate_passes must be at least 1"
             )
+
+
+def cup2_primary_rcds_production_policy(
+) -> RCDSPolicy:
+    """Return the bounded live-machine Cup-2 RCDS policy."""
+
+    return RCDSPolicy(
+        max_iterations=2,
+        max_evaluations=65,
+        line_samples=7,
+        line_half_width=0.35,
+        minimum_direction_norm=1e-06,
+        stall_iterations=2,
+        parabolic_refinement=True,
+    )
 
 
 @dataclass(frozen=True)
