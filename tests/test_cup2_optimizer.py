@@ -2285,3 +2285,352 @@ def test_run_primary_rcds_orchestrates_components(
         confirm_call[2]
         is fake_result
     )
+
+
+def test_opt_in_primary_rcds_replaces_primary_scans_but_keeps_einzel(
+    monkeypatch,
+):
+    current = cup2_state()
+
+    tracker = SourceReferenceTracker()
+
+    tracker.add(
+        reference(
+            time=0.0
+        )
+    )
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    monkeypatch.setattr(
+        module,
+        "capture_readbacks",
+        lambda adapter, state: state,
+    )
+
+    rcds_policy = module.RCDSPolicy(
+        max_iterations=2,
+        max_evaluations=20,
+        line_samples=3,
+        stall_iterations=1,
+    )
+
+    primary_result = object()
+    primary_confirmation = object()
+
+    primary_parameters = dict(
+        current.parameters
+    )
+
+    primary_parameters[
+        "lens2_voltage_v"
+    ] = 6100.0
+
+    primary_parameters[
+        "steerer_x1_v"
+    ] = 22.0
+
+    primary_parameters[
+        "steerer_y1_v"
+    ] = -17.0
+
+    primary_state = MachineState(
+        mass_u=current.mass_u,
+        cup=2,
+        stage=2,
+        role="working",
+        parameters=primary_parameters,
+    )
+
+    rcds_calls = []
+
+    def fake_run_primary_rcds(
+        adapter,
+        working_state,
+        cup1_reference_state,
+        received_profile,
+        received_tracker,
+        settling_policies,
+        measurement_policy,
+        comparison_policy,
+        optimization_policy,
+        **kwargs,
+    ):
+        rcds_calls.append(
+            {
+                "working_state": (
+                    working_state
+                ),
+                "profile": (
+                    received_profile
+                ),
+                "tracker": (
+                    received_tracker
+                ),
+                "policy": (
+                    kwargs[
+                        "rcds_policy"
+                    ]
+                ),
+                "maintenance_hook": (
+                    kwargs[
+                        "maintenance_hook"
+                    ]
+                ),
+            }
+        )
+
+        return (
+            primary_result,
+            primary_confirmation,
+            primary_state,
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_run_primary_rcds",
+        fake_run_primary_rcds,
+    )
+
+    scan_calls = []
+
+    def fake_scan(
+        adapter,
+        current_state,
+        profile,
+        tracker,
+        parameter_name,
+        scan_policy,
+        settling_policies,
+        measurement_policy,
+        comparison_policy,
+        **kwargs,
+    ):
+        scan_calls.append(
+            (
+                parameter_name,
+                current_state,
+            )
+        )
+
+        parameters = dict(
+            current_state.parameters
+        )
+
+        parameters[
+            "einzel_lens_voltage_v"
+        ] = 18250.0
+
+        return fake_scan_result(
+            MachineState(
+                mass_u=current_state.mass_u,
+                cup=2,
+                stage=2,
+                role="working",
+                parameters=parameters,
+            )
+        )
+
+    monkeypatch.setattr(
+        module,
+        "scan_parameter_transmission_1d",
+        fake_scan,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        lambda *args, **kwargs:
+            measurement(
+                8e-9
+            ),
+    )
+
+    result = module.optimize_cup2(
+        FakeAdapter(),
+        current,
+        cup1_state(),
+        profile,
+        tracker,
+        policies(),
+        MeasurementPolicy(),
+        ComparisonPolicy(),
+        optimization_policy=(
+            module.Cup2OptimizationPolicy(
+                coordinate_passes=2
+            )
+        ),
+        primary_rcds_policy=(
+            rcds_policy
+        ),
+        monotonic=lambda: 100.0,
+    )
+
+    assert (
+        len(
+            rcds_calls
+        )
+        == 1
+    )
+
+    assert (
+        rcds_calls[
+            0
+        ][
+            "working_state"
+        ].state_id
+        == current.state_id
+    )
+
+    assert (
+        rcds_calls[
+            0
+        ][
+            "profile"
+        ]
+        is profile
+    )
+
+    assert (
+        rcds_calls[
+            0
+        ][
+            "tracker"
+        ]
+        is tracker
+    )
+
+    assert (
+        rcds_calls[
+            0
+        ][
+            "policy"
+        ]
+        is rcds_policy
+    )
+
+    assert callable(
+        rcds_calls[
+            0
+        ][
+            "maintenance_hook"
+        ]
+    )
+
+    # Primary 1-D scans are gone in opt-in mode.
+    # The existing narrow einzel correction remains exactly once.
+    assert (
+        len(
+            scan_calls
+        )
+        == 1
+    )
+
+    assert (
+        scan_calls[
+            0
+        ][
+            0
+        ]
+        == "einzel_lens_voltage_v"
+    )
+
+    assert (
+        scan_calls[
+            0
+        ][
+            1
+        ].state_id
+        == primary_state.state_id
+    )
+
+    assert (
+        len(
+            result.scans
+        )
+        == 1
+    )
+
+    assert (
+        result.primary_optimization
+        is primary_result
+    )
+
+    assert (
+        result.primary_confirmation
+        is primary_confirmation
+    )
+
+    # RCDS primary solution survives the subsequent einzel retune.
+    assert (
+        result.final_state.parameters[
+            "lens2_voltage_v"
+        ]
+        == 6100.0
+    )
+
+    assert (
+        result.final_state.parameters[
+            "steerer_x1_v"
+        ]
+        == 22.0
+    )
+
+    assert (
+        result.final_state.parameters[
+            "steerer_y1_v"
+        ]
+        == -17.0
+    )
+
+    assert (
+        result.final_state.parameters[
+            "einzel_lens_voltage_v"
+        ]
+        == 18250.0
+    )
+
+    # Source/analyser commands remain frozen.
+    assert (
+        result.final_state.parameters[
+            "sputter_voltage_v"
+        ]
+        == 8000.0
+    )
+
+    assert (
+        result.final_state.parameters[
+            "extraction_voltage_v"
+        ]
+        == 19600.0
+    )
+
+    assert (
+        result.final_state.parameters[
+            "magnet_current_a"
+        ]
+        == 34.0
+    )
+
+    assert (
+        profile.best_commands[
+            "lens2_voltage_v"
+        ]
+        == 6100.0
+    )
+
+    assert (
+        profile.best_commands[
+            "steerer_x1_v"
+        ]
+        == 22.0
+    )
+
+    assert (
+        profile.best_commands[
+            "steerer_y1_v"
+        ]
+        == -17.0
+    )

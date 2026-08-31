@@ -183,6 +183,14 @@ class Cup2OptimizationResult:
     final_reference: SourceReference
     final_transmission: TransmissionResult
 
+    primary_optimization: (
+        OptimizationResult | None
+    ) = None
+
+    primary_confirmation: (
+        ObjectiveEvaluation | None
+    ) = None
+
 
 def _commands_equal(
     first: float,
@@ -1226,6 +1234,9 @@ def optimize_cup2(
     optimization_policy: (
         Cup2OptimizationPolicy | None
     ) = None,
+    primary_rcds_policy: (
+        RCDSPolicy | None
+    ) = None,
     noise_floor_a: float | None = None,
     logger=None,
     monotonic: Callable[
@@ -1393,9 +1404,61 @@ def optimize_cup2(
 
         return refreshed
 
+    primary_optimization = None
+    primary_confirmation = None
+
+    coordinate_passes = (
+        policy.coordinate_passes
+    )
+
+    if primary_rcds_policy is not None:
+        (
+            primary_optimization,
+            primary_confirmation,
+            working_state,
+        ) = _run_primary_rcds(
+            adapter,
+            working_state,
+            cup1_reference_state,
+            profile,
+            tracker,
+            settling_policies,
+            measurement_policy,
+            comparison_policy,
+            policy,
+            rcds_policy=(
+                primary_rcds_policy
+            ),
+            noise_floor_a=(
+                noise_floor_a
+            ),
+            logger=logger,
+            maintenance_hook=(
+                maintenance_hook
+            ),
+        )
+
+        _assert_frozen_cup1_parameters(
+            working_state,
+            cup1_reference_state,
+        )
+
+        # The three primary controls have already been handled
+        # jointly by RCDS. Keep only the existing narrow local
+        # upstream einzel correction.
+        scan_definitions = (
+            (
+                "einzel_lens_voltage_v",
+                policy.einzel_half_width_v,
+                policy.einzel_scan,
+            ),
+        )
+
+        coordinate_passes = 1
+
     for pass_index in range(
         1,
-        policy.coordinate_passes + 1,
+        coordinate_passes + 1,
     ):
         if logger is not None:
             logger.log_event(
@@ -1610,5 +1673,11 @@ def optimize_cup2(
         ),
         final_transmission=(
             final_transmission
+        ),
+        primary_optimization=(
+            primary_optimization
+        ),
+        primary_confirmation=(
+            primary_confirmation
         ),
     )
