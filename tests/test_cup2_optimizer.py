@@ -1468,3 +1468,445 @@ def test_primary_rcds_evaluator_tracks_actual_machine_state_between_calls(
             second_point
         )
     )
+
+
+def test_primary_rcds_full_mock_integration_loop(
+    monkeypatch,
+):
+    from sirius.rcds_optimizer import (
+        RCDSPolicy,
+        RobustConjugateDirectionOptimizer,
+    )
+
+    current = cup2_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    comparison_policy = ComparisonPolicy(
+        uncertainty_multiple=0.0,
+        minimum_absolute_improvement_a=0.0,
+        minimum_relative_improvement=0.0,
+    )
+
+    optimization_policy = (
+        module.Cup2OptimizationPolicy(
+            lens2_half_width_v=1000.0,
+            steerer_half_width_v=100.0,
+        )
+    )
+
+    problem = (
+        module._build_primary_rcds_problem(
+            current,
+            profile,
+            comparison_policy,
+            optimization_policy,
+        )
+    )
+
+    assert tuple(
+        axis.name
+        for axis
+        in problem.axes
+    ) == module.CUP2_PRIMARY_PARAMETERS
+
+    # Put the synthetic transmission maximum away from the
+    # initial point, but derive it from the actual current
+    # problem bounds rather than hard-coding voltage limits.
+    target_fractions = (
+        0.65,
+        0.60,
+        0.40,
+    )
+
+    optimum = tuple(
+        float(
+            axis.minimum
+        )
+        + fraction
+        * float(
+            axis.maximum
+            - axis.minimum
+        )
+        for axis, fraction
+        in zip(
+            problem.axes,
+            target_fractions,
+        )
+    )
+
+    tracker = SourceReferenceTracker()
+
+    tracker.add(
+        reference(
+            current=10e-9,
+            state_id="integration-cup1-reference",
+        )
+    )
+
+    transition_calls = []
+
+    machine = {
+        "state": current,
+    }
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        assert (
+            current.state_id
+            == machine[
+                "state"
+            ].state_id
+        )
+
+        assert (
+            select_target_cup
+            is False
+        )
+
+        assert target.cup == 2
+
+        transition_calls.append(
+            (
+                current,
+                target,
+            )
+        )
+
+        machine[
+            "state"
+        ] = target
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    def fake_measure_beam_current(
+        adapter,
+        measurement_policy,
+        *,
+        noise_floor_a=None,
+    ):
+        state = machine[
+            "state"
+        ]
+
+        squared_distance = sum(
+            (
+                (
+                    float(
+                        state.parameters[
+                            axis.name
+                        ]
+                    )
+                    - target_value
+                )
+                / float(
+                    axis.maximum
+                    - axis.minimum
+                )
+            )
+            ** 2
+            for axis, target_value
+            in zip(
+                problem.axes,
+                optimum,
+            )
+        )
+
+        transmission = (
+            0.95
+            - 0.25
+            * squared_distance
+        )
+
+        assert transmission > 0.0
+
+        return measurement(
+            10e-9
+            * transmission
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        fake_measure_beam_current,
+    )
+
+    evaluator = (
+        module._Cup2PrimaryRCDSEvaluator(
+            adapter=FakeAdapter(),
+            working_state=current,
+            cup1_reference_state=(
+                cup1_state()
+            ),
+            tracker=tracker,
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+        )
+    )
+
+    optimizer = (
+        RobustConjugateDirectionOptimizer(
+            RCDSPolicy(
+                max_iterations=4,
+                max_evaluations=120,
+                line_samples=5,
+                line_half_width=0.5,
+                stall_iterations=2,
+                parabolic_refinement=True,
+            )
+        )
+    )
+
+    result = optimizer.optimize(
+        problem,
+        evaluator,
+    )
+
+    # --------------------------------------------------------
+    # Generic optimizer contract
+    # --------------------------------------------------------
+
+    assert (
+        result.optimizer_name
+        == "rcds"
+    )
+
+    assert (
+        result.optimizer_version
+        == "1.0"
+    )
+
+    assert (
+        result.evaluations
+        > 1
+    )
+
+    assert (
+        result.best_evaluation.value
+        > result.initial_evaluation.value
+    )
+
+    assert (
+        problem.is_allowed(
+            result.best_evaluation.point
+        )
+        is True
+    )
+
+    assert (
+        result.metadata[
+            "axis_names"
+        ]
+        == module.CUP2_PRIMARY_PARAMETERS
+    )
+
+    # --------------------------------------------------------
+    # Every REAL optimizer evaluation crossed the safe
+    # transition boundary exactly once.
+    #
+    # Cache hits do not call the evaluator and therefore do not
+    # create hardware transitions.
+    # --------------------------------------------------------
+
+    assert (
+        len(
+            transition_calls
+        )
+        == result.evaluations
+    )
+
+    assert (
+        len(
+            result.history
+        )
+        == result.evaluations
+    )
+
+    for (
+        evaluation,
+        transition_pair,
+    ) in zip(
+        result.history,
+        transition_calls,
+    ):
+        source_state, target_state = (
+            transition_pair
+        )
+
+        requested = tuple(
+            float(
+                target_state.parameters[
+                    parameter_name
+                ]
+            )
+            for parameter_name
+            in module.CUP2_PRIMARY_PARAMETERS
+        )
+
+        assert (
+            evaluation.point
+            == pytest.approx(
+                requested
+            )
+        )
+
+        assert (
+            target_state.cup
+            == 2
+        )
+
+        assert (
+            target_state.stage
+            in (
+                None,
+                2,
+            )
+        )
+
+        # The next hardware move must always start from the
+        # previously observed physical state.
+        if (
+            source_state.state_id
+            != current.state_id
+        ):
+            previous_target = (
+                transition_calls[
+                    transition_calls.index(
+                        transition_pair
+                    )
+                    - 1
+                ][
+                    1
+                ]
+            )
+
+            assert (
+                source_state.state_id
+                == previous_target.state_id
+            )
+
+        # RCDS must not touch the separate upstream einzel
+        # correction in this phase.
+        assert (
+            target_state.parameters[
+                "einzel_lens_voltage_v"
+            ]
+            == current.parameters[
+                "einzel_lens_voltage_v"
+            ]
+        )
+
+        for parameter_name in (
+            module.CUP2_FROZEN_CUP1_PARAMETERS
+        ):
+            assert (
+                target_state.parameters[
+                    parameter_name
+                ]
+                == current.parameters[
+                    parameter_name
+                ]
+            )
+
+    # --------------------------------------------------------
+    # Stateful evaluator contract
+    #
+    # This deliberately documents an important property before
+    # production integration: after optimizer.optimize(), the
+    # physical machine is at the LAST real evaluation, not
+    # automatically at result.best_evaluation.point.
+    # --------------------------------------------------------
+
+    last_evaluation = (
+        result.history[
+            -1
+        ]
+    )
+
+    last_physical_point = tuple(
+        float(
+            evaluator.working_state.parameters[
+                parameter_name
+            ]
+        )
+        for parameter_name
+        in module.CUP2_PRIMARY_PARAMETERS
+    )
+
+    assert (
+        last_physical_point
+        == pytest.approx(
+            last_evaluation.point
+        )
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == transition_calls[
+            -1
+        ][
+            1
+        ].state_id
+    )
+
+    # --------------------------------------------------------
+    # Trace contract
+    # --------------------------------------------------------
+
+    trace_types = tuple(
+        event[
+            "event_type"
+        ]
+        for event
+        in result.metadata[
+            "trace"
+        ]
+    )
+
+    assert (
+        "optimizer_started"
+        in trace_types
+    )
+
+    assert (
+        "evaluation"
+        in trace_types
+    )
+
+    assert (
+        "line_search_started"
+        in trace_types
+    )
+
+    assert (
+        "line_search_completed"
+        in trace_types
+    )
+
+    assert (
+        "iteration_completed"
+        in trace_types
+    )
+
+    assert (
+        "optimizer_terminated"
+        in trace_types
+    )
