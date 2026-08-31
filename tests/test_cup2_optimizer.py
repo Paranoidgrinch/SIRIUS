@@ -1042,3 +1042,429 @@ def test_primary_rcds_problem_does_not_modify_mass_profile():
         profile.to_dict()
         == before
     )
+
+
+def test_primary_rcds_evaluator_uses_safe_transition_and_transmission(
+    monkeypatch,
+):
+    current = cup2_state()
+
+    tracker = SourceReferenceTracker()
+
+    tracker.add(
+        reference(
+            current=10e-9,
+            state_id="current-cup1-reference",
+        )
+    )
+
+    transition_calls = []
+    log_calls = []
+    maintenance_calls = []
+
+    def maintenance_hook(
+        state,
+    ):
+        maintenance_calls.append(
+            state.state_id
+        )
+
+        return state
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        transition_calls.append(
+            {
+                "current": current,
+                "target": target,
+                "settling_policies": (
+                    settling_policies
+                ),
+                "select_target_cup": (
+                    select_target_cup
+                ),
+            }
+        )
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        lambda *args, **kwargs:
+            measurement(
+                8e-9
+            ),
+    )
+
+    logger = SimpleNamespace(
+        log_state_transition=lambda transition:
+            log_calls.append(
+                (
+                    "transition",
+                    transition,
+                )
+            ),
+        log_measurement=lambda value, **kwargs:
+            log_calls.append(
+                (
+                    "measurement",
+                    value,
+                    kwargs,
+                )
+            ),
+        log_transmission=lambda value:
+            log_calls.append(
+                (
+                    "transmission",
+                    value,
+                )
+            ),
+    )
+
+    evaluator = (
+        module._Cup2PrimaryRCDSEvaluator(
+            adapter=FakeAdapter(),
+            working_state=current,
+            cup1_reference_state=(
+                cup1_state()
+            ),
+            tracker=tracker,
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+            logger=logger,
+            maintenance_hook=(
+                maintenance_hook
+            ),
+        )
+    )
+
+    requested = (
+        5500.0,
+        20.0,
+        -15.0,
+    )
+
+    evaluation = evaluator(
+        requested
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == 1
+    )
+
+    transition = transition_calls[
+        0
+    ]
+
+    assert (
+        transition[
+            "current"
+        ].state_id
+        == current.state_id
+    )
+
+    assert (
+        transition[
+            "select_target_cup"
+        ]
+        is False
+    )
+
+    target = transition[
+        "target"
+    ]
+
+    assert (
+        target.cup
+        == 2
+    )
+
+    assert (
+        target.parameters[
+            "lens2_voltage_v"
+        ]
+        == 5500.0
+    )
+
+    assert (
+        target.parameters[
+            "steerer_x1_v"
+        ]
+        == 20.0
+    )
+
+    assert (
+        target.parameters[
+            "steerer_y1_v"
+        ]
+        == -15.0
+    )
+
+    # Upstream correction is not an RCDS axis in this phase.
+    assert (
+        target.parameters[
+            "einzel_lens_voltage_v"
+        ]
+        == current.parameters[
+            "einzel_lens_voltage_v"
+        ]
+    )
+
+    # Cup-1 source/analyser commands remain frozen.
+    for parameter_name in (
+        module.CUP2_FROZEN_CUP1_PARAMETERS
+    ):
+        assert (
+            target.parameters[
+                parameter_name
+            ]
+            == current.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        evaluation.point
+        == pytest.approx(
+            requested
+        )
+    )
+
+    assert (
+        evaluation.value
+        == pytest.approx(
+            0.8
+        )
+    )
+
+    assert (
+        evaluation.sem
+        > 0.0
+    )
+
+    assert (
+        evaluation.safe
+        is True
+    )
+
+    assert (
+        evaluation.below_noise_floor
+        is False
+    )
+
+    assert (
+        evaluation.metadata[
+            "reference_state_id"
+        ]
+        == "current-cup1-reference"
+    )
+
+    assert (
+        evaluation.metadata[
+            "observed_state_id"
+        ]
+        == evaluator.working_state.state_id
+    )
+
+    assert (
+        evaluation.metadata[
+            "transmission"
+        ]
+        == pytest.approx(
+            0.8
+        )
+    )
+
+    assert maintenance_calls == [
+        current.state_id
+    ]
+
+    assert [
+        entry[
+            0
+        ]
+        for entry
+        in log_calls
+    ] == [
+        "transition",
+        "measurement",
+        "transmission",
+    ]
+
+    measurement_log = log_calls[
+        1
+    ]
+
+    assert (
+        measurement_log[
+            2
+        ][
+            "cup"
+        ]
+        == 2
+    )
+
+    assert (
+        measurement_log[
+            2
+        ][
+            "purpose"
+        ]
+        == "cup2_rcds_candidate"
+    )
+
+
+def test_primary_rcds_evaluator_tracks_actual_machine_state_between_calls(
+    monkeypatch,
+):
+    current = cup2_state()
+
+    tracker = SourceReferenceTracker()
+
+    tracker.add(
+        reference(
+            current=10e-9
+        )
+    )
+
+    transition_pairs = []
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        transition_pairs.append(
+            (
+                current,
+                target,
+            )
+        )
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        lambda *args, **kwargs:
+            measurement(
+                8e-9
+            ),
+    )
+
+    evaluator = (
+        module._Cup2PrimaryRCDSEvaluator(
+            adapter=FakeAdapter(),
+            working_state=current,
+            cup1_reference_state=(
+                cup1_state()
+            ),
+            tracker=tracker,
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+        )
+    )
+
+    first_point = (
+        5250.0,
+        10.0,
+        -5.0,
+    )
+
+    second_point = (
+        5400.0,
+        15.0,
+        -8.0,
+    )
+
+    first = evaluator(
+        first_point
+    )
+
+    second = evaluator(
+        second_point
+    )
+
+    assert (
+        len(
+            transition_pairs
+        )
+        == 2
+    )
+
+    first_current, first_target = (
+        transition_pairs[
+            0
+        ]
+    )
+
+    second_current, second_target = (
+        transition_pairs[
+            1
+        ]
+    )
+
+    assert (
+        first_current.state_id
+        == current.state_id
+    )
+
+    # The second safe transition starts from the actually
+    # observed state of the first evaluation, not from the
+    # optimizer's abstract incumbent.
+    assert (
+        second_current.state_id
+        == first_target.state_id
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == second_target.state_id
+    )
+
+    assert (
+        first.point
+        == pytest.approx(
+            first_point
+        )
+    )
+
+    assert (
+        second.point
+        == pytest.approx(
+            second_point
+        )
+    )

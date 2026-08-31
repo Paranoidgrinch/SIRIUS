@@ -9,6 +9,7 @@ from typing import Callable, Mapping
 from sirius.comparison import ComparisonPolicy
 from sirius.mass_profile import MassProfile
 from sirius.optimizer_api import (
+    ObjectiveEvaluation,
     OptimizationAxis,
     OptimizationProblem,
     comparison_policy_comparator,
@@ -31,6 +32,7 @@ from sirius.reference_orchestrator import (
 )
 from sirius.scan1d import ScanPolicy
 from sirius.settling import SettlingPolicy
+from sirius.safe_transition import apply_state
 from sirius.state import (
     MachineState,
     utc_now_iso,
@@ -538,6 +540,376 @@ def _assert_frozen_cup1_parameters(
             raise Cup2OptimizationError(
                 f"{parameter_name} changed during Cup-2 optimization"
             )
+@dataclass
+class _Cup2PrimaryRCDSEvaluator:
+    """
+    Stateful bridge from a 3-D RCDS point to one real Cup-2
+    transmission evaluation.
+
+    Hardware execution remains exclusively behind
+    sirius.safe_transition.apply_state().
+    """
+
+    adapter: object
+    working_state: MachineState
+    cup1_reference_state: MachineState
+    tracker: SourceReferenceTracker
+
+    settling_policies: Mapping[
+        str,
+        SettlingPolicy,
+    ]
+
+    measurement_policy: MeasurementPolicy
+
+    noise_floor_a: float | None = None
+    logger: object | None = None
+
+    maintenance_hook: (
+        Callable[
+            [MachineState],
+            MachineState,
+        ]
+        | None
+    ) = None
+
+    def __post_init__(
+        self,
+    ) -> None:
+        self.working_state.validate()
+        self.cup1_reference_state.validate()
+
+        if self.working_state.cup != 2:
+            raise ValueError(
+                "Cup-2 RCDS evaluator requires cup 2"
+            )
+
+        if self.working_state.stage not in (
+            None,
+            2,
+        ):
+            raise ValueError(
+                "Cup-2 RCDS evaluator requires stage 2 "
+                "or no stage assignment"
+            )
+
+        if (
+            self.working_state.mass_u
+            != self.cup1_reference_state.mass_u
+        ):
+            raise ValueError(
+                "Cup-1 reference state and Cup-2 working state "
+                "must use the same ion mass"
+            )
+
+        _assert_frozen_cup1_parameters(
+            self.working_state,
+            self.cup1_reference_state,
+        )
+
+        for parameter_name in (
+            CUP2_PRIMARY_PARAMETERS
+        ):
+            if (
+                parameter_name
+                not in self.working_state.parameters
+            ):
+                raise ValueError(
+                    f"Cup-2 state is missing {parameter_name}"
+                )
+
+            if (
+                parameter_name
+                not in self.settling_policies
+            ):
+                raise KeyError(
+                    "No settling policy configured for "
+                    f"{parameter_name}"
+                )
+
+    def __call__(
+        self,
+        point: tuple[
+            float,
+            ...
+        ],
+    ) -> ObjectiveEvaluation:
+        if len(
+            point
+        ) != len(
+            CUP2_PRIMARY_PARAMETERS
+        ):
+            raise ValueError(
+                "Cup-2 primary RCDS point must contain "
+                "lens2, X1 and Y1"
+            )
+
+        requested_point = tuple(
+            float(value)
+            for value
+            in point
+        )
+
+        if not all(
+            math.isfinite(
+                value
+            )
+            for value
+            in requested_point
+        ):
+            raise ValueError(
+                "Cup-2 RCDS point must contain only finite values"
+            )
+
+        if self.maintenance_hook is not None:
+            refreshed = (
+                self.maintenance_hook(
+                    self.working_state
+                )
+            )
+
+            refreshed.validate()
+
+            if (
+                refreshed.mass_u
+                != self.working_state.mass_u
+            ):
+                raise Cup2OptimizationError(
+                    "RCDS maintenance hook changed ion mass"
+                )
+
+            if refreshed.cup != 2:
+                raise Cup2OptimizationError(
+                    "RCDS maintenance hook did not restore Cup 2"
+                )
+
+            if refreshed.stage not in (
+                None,
+                2,
+            ):
+                raise Cup2OptimizationError(
+                    "RCDS maintenance hook changed optimization stage"
+                )
+
+            self.working_state = (
+                refreshed
+            )
+
+        _assert_frozen_cup1_parameters(
+            self.working_state,
+            self.cup1_reference_state,
+        )
+
+        parameters = dict(
+            self.working_state.parameters
+        )
+
+        readbacks = dict(
+            self.working_state.readbacks
+        )
+
+        for (
+            parameter_name,
+            command_value,
+        ) in zip(
+            CUP2_PRIMARY_PARAMETERS,
+            requested_point,
+        ):
+            parameters[
+                parameter_name
+            ] = float(
+                command_value
+            )
+
+            # A readback captured before the new command must
+            # never masquerade as verification of this candidate.
+            readbacks.pop(
+                parameter_name,
+                None,
+            )
+
+        candidate = MachineState(
+            mass_u=(
+                self.working_state.mass_u
+            ),
+            parameters=parameters,
+            readbacks=readbacks,
+            cup=2,
+            stage=(
+                self.working_state.stage
+            ),
+            role="optimizer_candidate",
+            rfq=deepcopy(
+                self.working_state.rfq
+            ),
+            fixed_conditions=deepcopy(
+                self.working_state.fixed_conditions
+            ),
+            metadata={
+                **deepcopy(
+                    self.working_state.metadata
+                ),
+                "optimizer": "rcds",
+                "optimizer_axes": (
+                    CUP2_PRIMARY_PARAMETERS
+                ),
+                "objective": (
+                    "cup1_normalized_transmission"
+                ),
+            },
+        )
+
+        candidate.validate()
+
+        transition = apply_state(
+            self.adapter,
+            current=(
+                self.working_state
+            ),
+            target=candidate,
+            settling_policies=(
+                self.settling_policies
+            ),
+            select_target_cup=False,
+        )
+
+        observed = (
+            transition.observed_state
+        )
+
+        observed.validate()
+
+        if observed.cup != 2:
+            raise Cup2OptimizationError(
+                "Safe transition did not preserve Cup 2"
+            )
+
+        if observed.stage not in (
+            None,
+            2,
+        ):
+            raise Cup2OptimizationError(
+                "Safe transition changed Cup-2 optimization stage"
+            )
+
+        if (
+            observed.mass_u
+            != self.working_state.mass_u
+        ):
+            raise Cup2OptimizationError(
+                "Safe transition changed ion mass"
+            )
+
+        self.working_state = (
+            observed
+        )
+
+        _assert_frozen_cup1_parameters(
+            self.working_state,
+            self.cup1_reference_state,
+        )
+
+        if self.logger is not None:
+            self.logger.log_state_transition(
+                transition
+            )
+
+        candidate_measurement = (
+            measure_beam_current(
+                self.adapter,
+                self.measurement_policy,
+                noise_floor_a=(
+                    self.noise_floor_a
+                ),
+            )
+        )
+
+        candidate_reference = (
+            self.tracker.latest
+        )
+
+        if candidate_reference is None:
+            raise Cup2OptimizationError(
+                "Cup-2 RCDS evaluation requires "
+                "a current Cup-1 source reference"
+            )
+
+        if not math.isclose(
+            float(
+                candidate_reference.mass_u
+            ),
+            float(
+                self.working_state.mass_u
+            ),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise Cup2OptimizationError(
+                "Cup-1 source reference and Cup-2 state "
+                "use different ion masses"
+            )
+
+        candidate_transmission = (
+            transmission_from_reference(
+                2,
+                candidate_measurement,
+                candidate_reference,
+            )
+        )
+
+        if self.logger is not None:
+            self.logger.log_measurement(
+                candidate_measurement,
+                cup=2,
+                state_id=(
+                    self.working_state.state_id
+                ),
+                purpose="cup2_rcds_candidate",
+            )
+
+            self.logger.log_transmission(
+                candidate_transmission
+            )
+
+        return ObjectiveEvaluation(
+            # RCDS explicitly requires this to be the requested
+            # optimizer point. The observed MachineState is kept
+            # separately in evaluator state and metadata.
+            point=requested_point,
+            value=float(
+                candidate_transmission.transmission
+            ),
+            sem=float(
+                candidate_transmission.transmission_sem
+            ),
+            safe=True,
+            below_noise_floor=bool(
+                candidate_measurement.below_noise_floor
+            ),
+            metadata={
+                "requested_state_id": (
+                    candidate.state_id
+                ),
+                "observed_state_id": (
+                    self.working_state.state_id
+                ),
+                "reference_state_id": (
+                    candidate_reference.state_id
+                ),
+                "current_a": float(
+                    candidate_measurement.mean_a
+                ),
+                "current_sem_a": float(
+                    candidate_measurement.sem_a
+                ),
+                "transmission": float(
+                    candidate_transmission.transmission
+                ),
+                "transmission_sem": float(
+                    candidate_transmission.transmission_sem
+                ),
+            },
+        )
 
 
 def _log_reference_check(
