@@ -1910,3 +1910,119 @@ def test_primary_rcds_full_mock_integration_loop(
         "optimizer_terminated"
         in trace_types
     )
+
+    # --------------------------------------------------------
+    # Best-point confirmation contract
+    #
+    # RCDS itself ends at the last real evaluation. Production
+    # integration must therefore explicitly return to the best
+    # point before final characterization.
+    # --------------------------------------------------------
+
+    last_state_before_confirmation = (
+        evaluator.working_state
+    )
+
+    transition_count_before_confirmation = len(
+        transition_calls
+    )
+
+    confirmation = (
+        module._confirm_primary_rcds_best(
+            evaluator,
+            result,
+        )
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == transition_count_before_confirmation
+        + 1
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == result.evaluations
+        + 1
+    )
+
+    confirmation_source, confirmation_target = (
+        transition_calls[
+            -1
+        ]
+    )
+
+    assert (
+        confirmation_source.state_id
+        == last_state_before_confirmation.state_id
+    )
+
+    assert (
+        confirmation.point
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    confirmed_physical_point = tuple(
+        float(
+            evaluator.working_state.parameters[
+                parameter_name
+            ]
+        )
+        for parameter_name
+        in module.CUP2_PRIMARY_PARAMETERS
+    )
+
+    assert (
+        confirmed_physical_point
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    target_point = tuple(
+        float(
+            confirmation_target.parameters[
+                parameter_name
+            ]
+        )
+        for parameter_name
+        in module.CUP2_PRIMARY_PARAMETERS
+    )
+
+    assert (
+        target_point
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == confirmation_target.state_id
+    )
+
+    # The synthetic objective is deterministic, so the fresh
+    # confirmation reproduces the old best value here. Real
+    # hardware is intentionally NOT required to do so because
+    # source drift may change the measured transmission.
+    assert (
+        confirmation.value
+        == pytest.approx(
+            result.best_evaluation.value
+        )
+    )
+
+    # The confirmation is deliberately outside the optimizer;
+    # it therefore does not alter OptimizationResult.history.
+    assert (
+        len(
+            result.history
+        )
+        == result.evaluations
+    )

@@ -13,6 +13,7 @@ from sirius.optimizer_api import (
     OptimizationAxis,
     OptimizationProblem,
     comparison_policy_comparator,
+    OptimizationResult,
 )
 from sirius.measurement import (
     BeamMeasurement,
@@ -910,6 +911,111 @@ class _Cup2PrimaryRCDSEvaluator:
                 ),
             },
         )
+
+
+def _confirm_primary_rcds_best(
+    evaluator: _Cup2PrimaryRCDSEvaluator,
+    result: OptimizationResult,
+) -> ObjectiveEvaluation:
+    """Safely return to and freshly measure the RCDS best point."""
+
+    if result.optimizer_name != "rcds":
+        raise ValueError(
+            "Cup-2 primary best confirmation requires an RCDS result"
+        )
+
+    axis_names = tuple(
+        result.metadata.get(
+            "axis_names",
+            (),
+        )
+    )
+
+    if axis_names != (
+        CUP2_PRIMARY_PARAMETERS
+    ):
+        raise ValueError(
+            "RCDS result axes do not match the Cup-2 primary axes"
+        )
+
+    if not result.best_evaluation.safe:
+        raise Cup2OptimizationError(
+            "RCDS best evaluation is not marked safe"
+        )
+
+    best_point = tuple(
+        float(value)
+        for value
+        in result.best_evaluation.point
+    )
+
+    if len(
+        best_point
+    ) != len(
+        CUP2_PRIMARY_PARAMETERS
+    ):
+        raise ValueError(
+            "RCDS best point dimension does not match Cup-2"
+        )
+
+    confirmation = evaluator(
+        best_point
+    )
+
+    if not confirmation.safe:
+        raise Cup2OptimizationError(
+            "Fresh RCDS best-point confirmation was not safe"
+        )
+
+    if (
+        len(
+            confirmation.point
+        )
+        != len(
+            best_point
+        )
+        or any(
+            not _commands_equal(
+                actual,
+                expected,
+            )
+            for actual, expected
+            in zip(
+                confirmation.point,
+                best_point,
+            )
+        )
+    ):
+        raise Cup2OptimizationError(
+            "Best-point confirmation returned the wrong optimizer point"
+        )
+
+    physical_point = tuple(
+        float(
+            evaluator.working_state.parameters[
+                parameter_name
+            ]
+        )
+        for parameter_name
+        in CUP2_PRIMARY_PARAMETERS
+    )
+
+    if any(
+        not _commands_equal(
+            actual,
+            expected,
+        )
+        for actual, expected
+        in zip(
+            physical_point,
+            best_point,
+        )
+    ):
+        raise Cup2OptimizationError(
+            "Physical Cup-2 state did not return to the RCDS best point"
+        )
+
+    return confirmation
 
 
 def _log_reference_check(
