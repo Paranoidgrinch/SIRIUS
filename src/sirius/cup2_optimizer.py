@@ -15,6 +15,10 @@ from sirius.optimizer_api import (
     comparison_policy_comparator,
     OptimizationResult,
 )
+from sirius.rcds_optimizer import (
+    RCDSPolicy,
+    RobustConjugateDirectionOptimizer,
+)
 from sirius.measurement import (
     BeamMeasurement,
     MeasurementPolicy,
@@ -1016,6 +1020,78 @@ def _confirm_primary_rcds_best(
         )
 
     return confirmation
+
+
+def _run_primary_rcds(
+    adapter,
+    working_state: MachineState,
+    cup1_reference_state: MachineState,
+    profile: MassProfile,
+    tracker: SourceReferenceTracker,
+    settling_policies: Mapping[str, SettlingPolicy],
+    measurement_policy: MeasurementPolicy,
+    comparison_policy: ComparisonPolicy,
+    optimization_policy: Cup2OptimizationPolicy,
+    *,
+    rcds_policy: RCDSPolicy | None = None,
+    noise_floor_a: float | None = None,
+    logger=None,
+    maintenance_hook: Callable[
+        [MachineState],
+        MachineState,
+    ] | None = None,
+) -> tuple[
+    OptimizationResult,
+    ObjectiveEvaluation,
+    MachineState,
+]:
+    """Run the isolated primary Cup-2 RCDS optimization."""
+
+    problem = _build_primary_rcds_problem(
+        working_state,
+        profile,
+        comparison_policy,
+        optimization_policy,
+    )
+
+    evaluator = _Cup2PrimaryRCDSEvaluator(
+        adapter=adapter,
+        working_state=working_state,
+        cup1_reference_state=cup1_reference_state,
+        tracker=tracker,
+        settling_policies=settling_policies,
+        measurement_policy=measurement_policy,
+        noise_floor_a=noise_floor_a,
+        logger=logger,
+        maintenance_hook=maintenance_hook,
+    )
+
+    optimizer = RobustConjugateDirectionOptimizer(
+        policy=rcds_policy
+    )
+
+    result = optimizer.optimize(
+        problem,
+        evaluator,
+    )
+
+    if logger is not None:
+        logger.log_optimizer_trace(
+            result,
+            stage=2,
+            cup=2,
+        )
+
+    confirmation = _confirm_primary_rcds_best(
+        evaluator,
+        result,
+    )
+
+    return (
+        result,
+        confirmation,
+        evaluator.working_state,
+    )
 
 
 def _log_reference_check(
