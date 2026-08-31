@@ -854,3 +854,191 @@ def test_below_noise_final_beam_is_rejected(
             ),
             monotonic=lambda: 100.0,
         )
+
+
+def test_primary_rcds_problem_uses_existing_cup2_local_windows_and_comparison_policy():
+    from sirius.optimizer_api import (
+        ObjectiveEvaluation,
+    )
+
+    current = cup2_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    optimization_policy = (
+        module.Cup2OptimizationPolicy(
+            lens2_half_width_v=400.0,
+            steerer_half_width_v=25.0,
+        )
+    )
+
+    comparison_policy = ComparisonPolicy(
+        uncertainty_multiple=0.0,
+        minimum_absolute_improvement_a=0.0,
+        minimum_relative_improvement=0.01,
+    )
+
+    problem = (
+        module._build_primary_rcds_problem(
+            current,
+            profile,
+            comparison_policy,
+            optimization_policy,
+        )
+    )
+
+    assert (
+        problem.dimension
+        == 3
+    )
+
+    assert tuple(
+        axis.name
+        for axis
+        in problem.axes
+    ) == module.CUP2_PRIMARY_PARAMETERS
+
+    assert problem.initial_point == pytest.approx(
+        (
+            current.parameters[
+                "lens2_voltage_v"
+            ],
+            current.parameters[
+                "steerer_x1_v"
+            ],
+            current.parameters[
+                "steerer_y1_v"
+            ],
+        )
+    )
+
+    assert (
+        "einzel_lens_voltage_v"
+        not in tuple(
+            axis.name
+            for axis
+            in problem.axes
+        )
+    )
+
+    half_widths = {
+        "lens2_voltage_v": (
+            optimization_policy.lens2_half_width_v
+        ),
+        "steerer_x1_v": (
+            optimization_policy.steerer_half_width_v
+        ),
+        "steerer_y1_v": (
+            optimization_policy.steerer_half_width_v
+        ),
+    }
+
+    for axis in problem.axes:
+        center = float(
+            current.parameters[
+                axis.name
+            ]
+        )
+
+        expected_profile = (
+            module._local_profile(
+                profile,
+                axis.name,
+                center,
+                half_widths[
+                    axis.name
+                ],
+            )
+        )
+
+        (
+            expected_minimum,
+            expected_maximum,
+        ) = expected_profile.effective_bounds(
+            axis.name
+        )
+
+        assert axis.minimum == pytest.approx(
+            expected_minimum
+        )
+
+        assert axis.maximum == pytest.approx(
+            expected_maximum
+        )
+
+        assert (
+            axis.minimum
+            <= center
+            <= axis.maximum
+        )
+
+    assert problem.maximize is True
+
+    # This builder only defines the local optimizer geometry.
+    # Authoritative machine safety remains in the later
+    # evaluator/transition path.
+    assert problem.safety_predicate is None
+
+    assert problem.comparison is not None
+
+    incumbent = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.0,
+        sem=0.0,
+    )
+
+    statistically_too_small = (
+        ObjectiveEvaluation(
+            point=problem.initial_point,
+            value=1.005,
+            sem=0.0,
+        )
+    )
+
+    meaningful_improvement = (
+        ObjectiveEvaluation(
+            point=problem.initial_point,
+            value=1.02,
+            sem=0.0,
+        )
+    )
+
+    assert (
+        problem.is_better(
+            statistically_too_small,
+            incumbent,
+        )
+        is False
+    )
+
+    assert (
+        problem.is_better(
+            meaningful_improvement,
+            incumbent,
+        )
+        is True
+    )
+
+
+def test_primary_rcds_problem_does_not_modify_mass_profile():
+    current = cup2_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    before = profile.to_dict()
+
+    module._build_primary_rcds_problem(
+        current,
+        profile,
+        ComparisonPolicy(),
+        module.Cup2OptimizationPolicy(),
+    )
+
+    assert (
+        profile.to_dict()
+        == before
+    )
