@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from sirius.measurement import BeamMeasurement
+from sirius.optimizer_api import OptimizationResult
 from sirius.reference import SourceReference, TransmissionResult
 from sirius.state import MachineState
 from sirius.transition import AppliedStateResult
@@ -444,6 +445,101 @@ class RunLogger:
                     result.observed_state.readbacks
                 ),
             },
+        )
+
+    def log_optimizer_trace(
+        self,
+        result: OptimizationResult,
+        *,
+        stage: int,
+        cup: int,
+    ) -> tuple[
+        dict[str, Any],
+        ...
+    ]:
+        """Persist a completed optimizer trace event-by-event."""
+
+        trace = result.metadata.get(
+            "trace"
+        )
+
+        if trace is None:
+            raise ValueError(
+                "Optimization result does not contain a trace"
+            )
+
+        if not isinstance(
+            trace,
+            (list, tuple),
+        ):
+            raise TypeError(
+                "Optimization trace must be a list or tuple"
+            )
+
+        prepared_payloads: list[
+            dict[str, Any]
+        ] = []
+
+        for trace_index, trace_event in enumerate(
+            trace
+        ):
+            if not isinstance(
+                trace_event,
+                dict,
+            ):
+                raise TypeError(
+                    "Optimization trace events must be dictionaries"
+                )
+
+            trace_event_type = trace_event.get(
+                "event_type"
+            )
+
+            if (
+                not isinstance(
+                    trace_event_type,
+                    str,
+                )
+                or not trace_event_type
+            ):
+                raise ValueError(
+                    "Optimization trace event_type must be a non-empty string"
+                )
+
+            details = {
+                str(key): value
+                for key, value
+                in trace_event.items()
+                if key != "event_type"
+            }
+
+            payload = {
+                "stage": stage,
+                "cup": cup,
+                "optimizer_name": result.optimizer_name,
+                "optimizer_version": result.optimizer_version,
+                "trace_index": trace_index,
+                "trace_event_type": trace_event_type,
+                "details": details,
+            }
+
+            # Validate the complete trace before the first
+            # append-only event is written.
+            _jsonable(
+                payload
+            )
+
+            prepared_payloads.append(
+                payload
+            )
+
+        return tuple(
+            self.log_event(
+                "optimizer_trace_event",
+                payload,
+            )
+            for payload
+            in prepared_payloads
         )
 
     def log_optimizer_decision(

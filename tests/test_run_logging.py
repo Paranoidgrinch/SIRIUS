@@ -389,3 +389,305 @@ def test_state_file_is_not_silently_overwritten(
             state,
             "best",
         )
+
+
+def test_optimizer_trace_is_persisted(
+    tmp_path,
+):
+    from sirius.optimizer_api import (
+        ObjectiveEvaluation,
+        OptimizationResult,
+    )
+
+    logger = RunLogger.create(
+        tmp_path,
+        60.0,
+        run_id="optimizer-trace-run",
+        git_commit="abc",
+    )
+
+    evaluation = ObjectiveEvaluation(
+        point=(
+            0.5,
+        ),
+        value=1.25,
+        sem=0.02,
+    )
+
+    result = OptimizationResult(
+        optimizer_name="rcds",
+        optimizer_version="1.0",
+        initial_evaluation=evaluation,
+        best_evaluation=evaluation,
+        history=(
+            evaluation,
+        ),
+        iterations=1,
+        termination_reason="stalled",
+        metadata={
+            "trace": (
+                {
+                    "event_type": "optimizer_started",
+                    "axis_names": (
+                        "lens2_voltage_v",
+                    ),
+                },
+                {
+                    "event_type": "optimizer_terminated",
+                    "evaluations": 1,
+                    "objective": 1.25,
+                    "uncertainty": 0.02,
+                },
+            ),
+        },
+    )
+
+    logged = logger.log_optimizer_trace(
+        result,
+        stage=2,
+        cup=2,
+    )
+
+    assert (
+        len(
+            logged
+        )
+        == 2
+    )
+
+    events = read_events(
+        logger.paths.events
+    )
+
+    assert (
+        len(
+            events
+        )
+        == 3
+    )
+
+    assert [
+        event[
+            "sequence"
+        ]
+        for event
+        in events
+    ] == [
+        1,
+        2,
+        3,
+    ]
+
+    first = events[
+        1
+    ]
+
+    second = events[
+        2
+    ]
+
+    assert (
+        first[
+            "event_type"
+        ]
+        == "optimizer_trace_event"
+    )
+
+    assert (
+        second[
+            "event_type"
+        ]
+        == "optimizer_trace_event"
+    )
+
+    assert (
+        first[
+            "payload"
+        ][
+            "stage"
+        ]
+        == 2
+    )
+
+    assert (
+        first[
+            "payload"
+        ][
+            "cup"
+        ]
+        == 2
+    )
+
+    assert (
+        first[
+            "payload"
+        ][
+            "optimizer_name"
+        ]
+        == "rcds"
+    )
+
+    assert (
+        first[
+            "payload"
+        ][
+            "optimizer_version"
+        ]
+        == "1.0"
+    )
+
+    assert (
+        first[
+            "payload"
+        ][
+            "trace_index"
+        ]
+        == 0
+    )
+
+    assert (
+        second[
+            "payload"
+        ][
+            "trace_index"
+        ]
+        == 1
+    )
+
+    assert (
+        first[
+            "payload"
+        ][
+            "trace_event_type"
+        ]
+        == "optimizer_started"
+    )
+
+    assert (
+        second[
+            "payload"
+        ][
+            "trace_event_type"
+        ]
+        == "optimizer_terminated"
+    )
+
+    assert first[
+        "payload"
+    ][
+        "details"
+    ][
+        "axis_names"
+    ] == [
+        "lens2_voltage_v",
+    ]
+
+    assert (
+        second[
+            "payload"
+        ][
+            "details"
+        ][
+            "evaluations"
+        ]
+        == 1
+    )
+
+    assert (
+        second[
+            "payload"
+        ][
+            "details"
+        ][
+            "objective"
+        ]
+        == 1.25
+    )
+
+
+def test_optimizer_trace_is_validated_before_writing(
+    tmp_path,
+):
+    from sirius.optimizer_api import (
+        ObjectiveEvaluation,
+        OptimizationResult,
+    )
+
+    logger = RunLogger.create(
+        tmp_path,
+        60.0,
+        run_id="invalid-optimizer-trace-run",
+        git_commit="abc",
+    )
+
+    evaluation = ObjectiveEvaluation(
+        point=(
+            0.5,
+        ),
+        value=1.0,
+        sem=0.01,
+    )
+
+    result = OptimizationResult(
+        optimizer_name="rcds",
+        optimizer_version="1.0",
+        initial_evaluation=evaluation,
+        best_evaluation=evaluation,
+        history=(
+            evaluation,
+        ),
+        iterations=1,
+        termination_reason="stalled",
+        metadata={
+            "trace": (
+                {
+                    "event_type": "optimizer_started",
+                },
+                {
+                    "event_type": "evaluation",
+                    "objective": float(
+                        "nan"
+                    ),
+                },
+            ),
+        },
+    )
+
+    with pytest.raises(
+        ValueError
+    ):
+        logger.log_optimizer_trace(
+            result,
+            stage=2,
+            cup=2,
+        )
+
+    events = read_events(
+        logger.paths.events
+    )
+
+    # No partial optimizer trace may have been appended.
+    assert (
+        len(
+            events
+        )
+        == 1
+    )
+
+    assert (
+        events[
+            0
+        ][
+            "event_type"
+        ]
+        == "run_started"
+    )
+
+    assert (
+        events[
+            0
+        ][
+            "sequence"
+        ]
+        == 1
+    )
