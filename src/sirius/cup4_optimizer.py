@@ -8,6 +8,7 @@ from typing import Callable, Mapping
 
 from sirius.comparison import ComparisonPolicy
 from sirius.optimizer_api import (
+    ObjectiveEvaluation,
     OptimizationAxis,
     OptimizationProblem,
     comparison_policy_comparator,
@@ -25,6 +26,7 @@ from sirius.qpt_model import (
     QPT3_PARAMETER,
     evaluate_qpt,
     qpt_cfa_is_feasible,
+    qpt_commands_from_cfa,
 )
 from sirius.qpt_scan2d import (
     QPT2DScanPolicy,
@@ -45,6 +47,7 @@ from sirius.reference_orchestrator import (
 from sirius.run_logging import RunLogger
 from sirius.scan1d import ScanPolicy
 from sirius.settling import SettlingPolicy
+from sirius.safe_transition import apply_state
 from sirius.state import (
     MachineState,
     utc_now_iso,
@@ -687,6 +690,478 @@ def _build_primary_rcds_problem(
             )
         ),
     )
+
+
+@dataclass
+class _Cup4PrimaryRCDSEvaluator:
+    """
+    Stateful bridge from one reduced Cup-4 RCDS point
+    (F, A, X2, Y2) to one real transmission measurement.
+
+    QPT common mode C and the complete upstream Cup-3 solution
+    remain frozen. Hardware execution remains exclusively behind
+    sirius.safe_transition.apply_state().
+    """
+
+    adapter: object
+
+    working_state: MachineState
+    cup3_reference_state: MachineState
+
+    tracker: SourceReferenceTracker
+
+    settling_policies: Mapping[
+        str,
+        SettlingPolicy,
+    ]
+
+    measurement_policy: MeasurementPolicy
+
+    frozen_common_v: float
+
+    noise_floor_a: float | None = None
+    logger: object | None = None
+
+    maintenance_hook: (
+        Callable[
+            [MachineState],
+            MachineState,
+        ]
+        | None
+    ) = None
+
+    def __post_init__(
+        self,
+    ) -> None:
+        self.working_state.validate()
+        self.cup3_reference_state.validate()
+
+        self.frozen_common_v = float(
+            self.frozen_common_v
+        )
+
+        if not math.isfinite(
+            self.frozen_common_v
+        ):
+            raise ValueError(
+                "Cup-4 frozen QPT common mode must be finite"
+            )
+
+        if self.working_state.cup != 4:
+            raise ValueError(
+                "Cup-4 RCDS evaluator requires Cup 4"
+            )
+
+        if self.working_state.stage not in (
+            None,
+            4,
+        ):
+            raise ValueError(
+                "Cup-4 RCDS evaluator requires stage 4 "
+                "or no stage assignment"
+            )
+
+        if self.cup3_reference_state.cup != 3:
+            raise ValueError(
+                "Cup-4 RCDS evaluator requires a Cup-3 "
+                "reference state"
+            )
+
+        if not math.isclose(
+            float(
+                self.working_state.mass_u
+            ),
+            float(
+                self.cup3_reference_state.mass_u
+            ),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                "Cup-3 reference and Cup-4 working state "
+                "use different ion masses"
+            )
+
+        _assert_upstream_frozen(
+            self.working_state,
+            self.cup3_reference_state,
+        )
+
+        _assert_qpt_common_frozen(
+            self.working_state,
+            self.frozen_common_v,
+        )
+
+        for parameter_name in (
+            CUP4_PRIMARY_PARAMETERS
+        ):
+            if (
+                parameter_name
+                not in self.working_state.parameters
+            ):
+                raise ValueError(
+                    "Cup-4 state is missing "
+                    f"{parameter_name}"
+                )
+
+            if (
+                parameter_name
+                not in self.settling_policies
+            ):
+                raise KeyError(
+                    "No settling policy configured for "
+                    f"{parameter_name}"
+                )
+
+    def __call__(
+        self,
+        point: tuple[
+            float,
+            ...
+        ],
+    ) -> ObjectiveEvaluation:
+        if len(
+            point
+        ) != len(
+            CUP4_RCDS_AXIS_NAMES
+        ):
+            raise ValueError(
+                "Cup-4 primary RCDS point must contain "
+                "F, A, X2 and Y2"
+            )
+
+        requested_point = tuple(
+            float(
+                value
+            )
+            for value
+            in point
+        )
+
+        if not all(
+            math.isfinite(
+                value
+            )
+            for value
+            in requested_point
+        ):
+            raise ValueError(
+                "Cup-4 RCDS point must contain only finite values"
+            )
+
+        if (
+            self.maintenance_hook
+            is not None
+        ):
+            refreshed = (
+                self.maintenance_hook(
+                    self.working_state
+                )
+            )
+
+            refreshed.validate()
+
+            if not math.isclose(
+                float(
+                    refreshed.mass_u
+                ),
+                float(
+                    self.working_state.mass_u
+                ),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise Cup4OptimizationError(
+                    "RCDS maintenance hook changed ion mass"
+                )
+
+            if refreshed.cup != 4:
+                raise Cup4OptimizationError(
+                    "RCDS maintenance hook did not restore Cup 4"
+                )
+
+            if refreshed.stage not in (
+                None,
+                4,
+            ):
+                raise Cup4OptimizationError(
+                    "RCDS maintenance hook changed optimization stage"
+                )
+
+            self.working_state = (
+                refreshed
+            )
+
+        _assert_upstream_frozen(
+            self.working_state,
+            self.cup3_reference_state,
+        )
+
+        _assert_qpt_common_frozen(
+            self.working_state,
+            self.frozen_common_v,
+        )
+
+        (
+            requested_focus_v,
+            requested_asymmetry_v,
+            requested_x2_v,
+            requested_y2_v,
+        ) = requested_point
+
+        qpt_commands = (
+            qpt_commands_from_cfa(
+                self.frozen_common_v,
+                requested_focus_v,
+                requested_asymmetry_v,
+            )
+        )
+
+        parameters = dict(
+            self.working_state.parameters
+        )
+
+        parameters.update(
+            qpt_commands.parameters
+        )
+
+        parameters[
+            CUP4_STEERER_PARAMETERS[
+                0
+            ]
+        ] = requested_x2_v
+
+        parameters[
+            CUP4_STEERER_PARAMETERS[
+                1
+            ]
+        ] = requested_y2_v
+
+        readbacks = dict(
+            self.working_state.readbacks
+        )
+
+        # No readback acquired before this candidate may be
+        # reused as verification of a newly requested command.
+        for parameter_name in (
+            CUP4_PRIMARY_PARAMETERS
+        ):
+            readbacks.pop(
+                parameter_name,
+                None,
+            )
+
+        candidate = MachineState(
+            mass_u=(
+                self.working_state.mass_u
+            ),
+            parameters=parameters,
+            readbacks=readbacks,
+            cup=4,
+            stage=(
+                self.working_state.stage
+            ),
+            role="optimizer_candidate",
+            rfq=deepcopy(
+                self.working_state.rfq
+            ),
+            fixed_conditions=deepcopy(
+                self.working_state.fixed_conditions
+            ),
+            metadata={
+                **deepcopy(
+                    self.working_state.metadata
+                ),
+                "optimizer": "rcds",
+                "optimizer_axes": (
+                    CUP4_RCDS_AXIS_NAMES
+                ),
+                "objective": (
+                    "cup1_normalized_transmission"
+                ),
+                "qpt_common_command_v": (
+                    self.frozen_common_v
+                ),
+                "qpt_focus_command_v": (
+                    requested_focus_v
+                ),
+                "qpt_asymmetry_command_v": (
+                    requested_asymmetry_v
+                ),
+            },
+        )
+
+        candidate.validate()
+
+        transition = apply_state(
+            self.adapter,
+            current=(
+                self.working_state
+            ),
+            target=candidate,
+            settling_policies=(
+                self.settling_policies
+            ),
+            select_target_cup=False,
+        )
+
+        observed = (
+            transition.observed_state
+        )
+
+        observed.validate()
+
+        if observed.cup != 4:
+            raise Cup4OptimizationError(
+                "Safe transition did not preserve Cup 4"
+            )
+
+        if observed.stage not in (
+            None,
+            4,
+        ):
+            raise Cup4OptimizationError(
+                "Safe transition changed Cup-4 optimization stage"
+            )
+
+        if not math.isclose(
+            float(
+                observed.mass_u
+            ),
+            float(
+                self.working_state.mass_u
+            ),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise Cup4OptimizationError(
+                "Safe transition changed ion mass"
+            )
+
+        self.working_state = (
+            observed
+        )
+
+        _assert_upstream_frozen(
+            self.working_state,
+            self.cup3_reference_state,
+        )
+
+        _assert_qpt_common_frozen(
+            self.working_state,
+            self.frozen_common_v,
+        )
+
+        if self.logger is not None:
+            self.logger.log_state_transition(
+                transition
+            )
+
+        candidate_measurement = (
+            measure_beam_current(
+                self.adapter,
+                self.measurement_policy,
+                noise_floor_a=(
+                    self.noise_floor_a
+                ),
+            )
+        )
+
+        candidate_reference = (
+            self.tracker.latest
+        )
+
+        if candidate_reference is None:
+            raise Cup4OptimizationError(
+                "Cup-4 RCDS evaluation requires "
+                "a current Cup-1 source reference"
+            )
+
+        if not math.isclose(
+            float(
+                candidate_reference.mass_u
+            ),
+            float(
+                self.working_state.mass_u
+            ),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise Cup4OptimizationError(
+                "Cup-1 source reference and Cup-4 state "
+                "use different ion masses"
+            )
+
+        candidate_transmission = (
+            transmission_from_reference(
+                4,
+                candidate_measurement,
+                candidate_reference,
+            )
+        )
+
+        if self.logger is not None:
+            self.logger.log_measurement(
+                candidate_measurement,
+                cup=4,
+                state_id=(
+                    self.working_state.state_id
+                ),
+                purpose="cup4_rcds_candidate",
+            )
+
+            self.logger.log_transmission(
+                candidate_transmission
+            )
+
+        return ObjectiveEvaluation(
+            # RCDS requires the optimizer-space point here.
+            # The actual observed physical state is retained
+            # separately in evaluator state and metadata.
+            point=requested_point,
+            value=float(
+                candidate_transmission.transmission
+            ),
+            sem=float(
+                candidate_transmission.transmission_sem
+            ),
+            safe=True,
+            below_noise_floor=bool(
+                candidate_measurement.below_noise_floor
+            ),
+            metadata={
+                "requested_state_id": (
+                    candidate.state_id
+                ),
+                "observed_state_id": (
+                    self.working_state.state_id
+                ),
+                "reference_state_id": (
+                    candidate_reference.state_id
+                ),
+                "current_a": float(
+                    candidate_measurement.mean_a
+                ),
+                "current_sem_a": float(
+                    candidate_measurement.sem_a
+                ),
+                "transmission": float(
+                    candidate_transmission.transmission
+                ),
+                "transmission_sem": float(
+                    candidate_transmission.transmission_sem
+                ),
+                "qpt_common_v": (
+                    self.frozen_common_v
+                ),
+                "qpt_focus_v": (
+                    requested_focus_v
+                ),
+                "qpt_asymmetry_v": (
+                    requested_asymmetry_v
+                ),
+            },
+        )
 
 
 def _log_reference_check(

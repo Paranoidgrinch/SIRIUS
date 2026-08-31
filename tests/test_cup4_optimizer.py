@@ -1021,3 +1021,431 @@ def test_primary_rcds_problem_uses_f_a_x2_y2_with_coupled_qpt_feasibility():
         profile.to_dict()
         == before
     )
+
+
+def test_primary_rcds_evaluator_uses_safe_transition_and_transmission(
+    monkeypatch,
+):
+    current = cup4_state()
+    cup3 = cup3_state()
+    source_tracker = tracker()
+
+    transition_calls = []
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        transition_calls.append(
+            (
+                current,
+                target,
+                settling_policies,
+                select_target_cup,
+            )
+        )
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        lambda *args, **kwargs:
+            measurement(
+                8e-9
+            ),
+    )
+
+    evaluator = (
+        module._Cup4PrimaryRCDSEvaluator(
+            adapter=object(),
+            working_state=current,
+            cup3_reference_state=cup3,
+            tracker=source_tracker,
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+            frozen_common_v=3000.0,
+        )
+    )
+
+    requested_point = (
+        1200.0,
+        100.0,
+        15.0,
+        -20.0,
+    )
+
+    evaluation = evaluator(
+        requested_point
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == 1
+    )
+
+    (
+        transition_source,
+        transition_target,
+        transition_policies,
+        select_target_cup,
+    ) = transition_calls[
+        0
+    ]
+
+    assert (
+        transition_source.state_id
+        == current.state_id
+    )
+
+    assert (
+        transition_policies
+        is evaluator.settling_policies
+    )
+
+    assert (
+        select_target_cup
+        is False
+    )
+
+    # C = 3000, F = 1200, A = 100
+    #
+    # V1 = C - F - A = 1700
+    # V2 = C         = 3000
+    # V3 = C - F + A = 1900
+    assert (
+        transition_target.parameters[
+            QPT1_PARAMETER
+        ]
+        == pytest.approx(
+            1700.0
+        )
+    )
+
+    assert (
+        transition_target.parameters[
+            QPT2_PARAMETER
+        ]
+        == pytest.approx(
+            3000.0
+        )
+    )
+
+    assert (
+        transition_target.parameters[
+            QPT3_PARAMETER
+        ]
+        == pytest.approx(
+            1900.0
+        )
+    )
+
+    assert (
+        transition_target.parameters[
+            "steerer_x2_v"
+        ]
+        == pytest.approx(
+            15.0
+        )
+    )
+
+    assert (
+        transition_target.parameters[
+            "steerer_y2_v"
+        ]
+        == pytest.approx(
+            -20.0
+        )
+    )
+
+    # The complete upstream Cup-3 transport solution remains
+    # unchanged.
+    for parameter_name in (
+        module.CUP4_FROZEN_UPSTREAM_PARAMETERS
+    ):
+        assert (
+            transition_target.parameters[
+                parameter_name
+            ]
+            == cup3.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        transition_target.rfq
+        == cup3.rfq
+    )
+
+    qpt = module.evaluate_qpt(
+        transition_target
+    )
+
+    assert (
+        qpt.command_coordinates.common_v
+        == pytest.approx(
+            3000.0
+        )
+    )
+
+    assert (
+        qpt.command_coordinates.global_focus_v
+        == pytest.approx(
+            1200.0
+        )
+    )
+
+    assert (
+        qpt.command_coordinates.asymmetry_v
+        == pytest.approx(
+            100.0
+        )
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == transition_target.state_id
+    )
+
+    assert (
+        evaluation.point
+        == pytest.approx(
+            requested_point
+        )
+    )
+
+    assert (
+        evaluation.value
+        == pytest.approx(
+            0.8
+        )
+    )
+
+    assert (
+        evaluation.safe
+        is True
+    )
+
+    assert (
+        evaluation.below_noise_floor
+        is False
+    )
+
+    assert (
+        evaluation.metadata[
+            "requested_state_id"
+        ]
+        == transition_target.state_id
+    )
+
+    assert (
+        evaluation.metadata[
+            "observed_state_id"
+        ]
+        == transition_target.state_id
+    )
+
+    assert (
+        evaluation.metadata[
+            "reference_state_id"
+        ]
+        == "cup1-reference"
+    )
+
+    assert (
+        evaluation.metadata[
+            "qpt_common_v"
+        ]
+        == pytest.approx(
+            3000.0
+        )
+    )
+
+
+def test_primary_rcds_evaluator_tracks_actual_machine_state_between_calls(
+    monkeypatch,
+):
+    current = cup4_state()
+
+    transition_calls = []
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        transition_calls.append(
+            (
+                current,
+                target,
+            )
+        )
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        lambda *args, **kwargs:
+            measurement(
+                8e-9
+            ),
+    )
+
+    evaluator = (
+        module._Cup4PrimaryRCDSEvaluator(
+            adapter=object(),
+            working_state=current,
+            cup3_reference_state=(
+                cup3_state()
+            ),
+            tracker=tracker(),
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+            frozen_common_v=3000.0,
+        )
+    )
+
+    first_point = (
+        1100.0,
+        0.0,
+        12.0,
+        -12.0,
+    )
+
+    second_point = (
+        900.0,
+        -100.0,
+        5.0,
+        -8.0,
+    )
+
+    first = evaluator(
+        first_point
+    )
+
+    second = evaluator(
+        second_point
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == 2
+    )
+
+    first_source, first_target = (
+        transition_calls[
+            0
+        ]
+    )
+
+    second_source, second_target = (
+        transition_calls[
+            1
+        ]
+    )
+
+    assert (
+        first_source.state_id
+        == current.state_id
+    )
+
+    # The second transition must start from the actual observed
+    # state of the first transition, not from the original state.
+    assert (
+        second_source.state_id
+        == first_target.state_id
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == second_target.state_id
+    )
+
+    assert (
+        first.point
+        == pytest.approx(
+            first_point
+        )
+    )
+
+    assert (
+        second.point
+        == pytest.approx(
+            second_point
+        )
+    )
+
+    first_qpt = module.evaluate_qpt(
+        first_target
+    )
+
+    second_qpt = module.evaluate_qpt(
+        second_target
+    )
+
+    assert (
+        first_qpt.command_coordinates.common_v
+        == pytest.approx(
+            3000.0
+        )
+    )
+
+    assert (
+        second_qpt.command_coordinates.common_v
+        == pytest.approx(
+            3000.0
+        )
+    )
+
+    for target in (
+        first_target,
+        second_target,
+    ):
+        for parameter_name in (
+            module.CUP4_FROZEN_UPSTREAM_PARAMETERS
+        ):
+            assert (
+                target.parameters[
+                    parameter_name
+                ]
+                == cup3_state().parameters[
+                    parameter_name
+                ]
+            )
+
+        assert (
+            target.rfq
+            == cup3_state().rfq
+        )
