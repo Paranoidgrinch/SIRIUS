@@ -748,3 +748,276 @@ def test_below_noise_final_current_is_rejected(
             ComparisonPolicy(),
             monotonic=lambda: 100.0,
         )
+
+
+def test_primary_rcds_problem_uses_f_a_x2_y2_with_coupled_qpt_feasibility():
+    from sirius.optimizer_api import (
+        ObjectiveEvaluation,
+    )
+
+    current = cup4_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    before = profile.to_dict()
+
+    optimization_policy = (
+        module.Cup4OptimizationPolicy(
+            steerer_half_width_v=25.0,
+        )
+    )
+
+    comparison_policy = (
+        ComparisonPolicy(
+            uncertainty_multiple=0.0,
+            minimum_absolute_improvement_a=0.0,
+            minimum_relative_improvement=0.01,
+        )
+    )
+
+    problem = (
+        module._build_primary_rcds_problem(
+            current,
+            profile,
+            comparison_policy,
+            optimization_policy,
+        )
+    )
+
+    assert (
+        problem.dimension
+        == 4
+    )
+
+    assert tuple(
+        axis.name
+        for axis
+        in problem.axes
+    ) == (
+        module.CUP4_RCDS_AXIS_NAMES
+    )
+
+    # Current cup4_state command coordinates:
+    #
+    # C = 3000
+    # F = 1000
+    # A = 0
+    # X2 = 10
+    # Y2 = -10
+    assert (
+        problem.initial_point
+        == pytest.approx(
+            (
+                1000.0,
+                0.0,
+                10.0,
+                -10.0,
+            )
+        )
+    )
+
+    focus_axis = (
+        problem.axes[
+            0
+        ]
+    )
+
+    asymmetry_axis = (
+        problem.axes[
+            1
+        ]
+    )
+
+    assert (
+        focus_axis.minimum
+        == pytest.approx(
+            1000.0
+            - optimization_policy
+            .qpt_scan
+            .initial_focus_half_width_v
+        )
+    )
+
+    assert (
+        focus_axis.maximum
+        == pytest.approx(
+            1000.0
+            + optimization_policy
+            .qpt_scan
+            .initial_focus_half_width_v
+        )
+    )
+
+    assert (
+        asymmetry_axis.minimum
+        == pytest.approx(
+            -optimization_policy
+            .qpt_scan
+            .initial_asymmetry_half_width_v
+        )
+    )
+
+    assert (
+        asymmetry_axis.maximum
+        == pytest.approx(
+            optimization_policy
+            .qpt_scan
+            .initial_asymmetry_half_width_v
+        )
+    )
+
+    # Steerer bounds reuse the existing Cup-4 local-profile
+    # semantics.
+    for axis, parameter_name in zip(
+        problem.axes[
+            2:
+        ],
+        module.CUP4_STEERER_PARAMETERS,
+    ):
+        center = float(
+            current.parameters[
+                parameter_name
+            ]
+        )
+
+        expected_profile = (
+            module._local_profile(
+                profile,
+                parameter_name,
+                center,
+                optimization_policy
+                .steerer_half_width_v,
+            )
+        )
+
+        (
+            expected_minimum,
+            expected_maximum,
+        ) = (
+            expected_profile
+            .effective_bounds(
+                parameter_name
+            )
+        )
+
+        assert (
+            axis.minimum
+            == pytest.approx(
+                expected_minimum
+            )
+        )
+
+        assert (
+            axis.maximum
+            == pytest.approx(
+                expected_maximum
+            )
+        )
+
+    assert (
+        problem.maximize
+        is True
+    )
+
+    assert (
+        problem.safety_predicate
+        is not None
+    )
+
+    # Current command-space point must be feasible.
+    assert (
+        problem.is_allowed(
+            problem.initial_point
+        )
+        is True
+    )
+
+    # This point lies inside all rectangular optimizer-axis
+    # bounds but violates the coupled physical QPT constraint.
+    #
+    # C = 3000
+    # F = 3000
+    # A = 1500
+    #
+    # V1 = C - F - A = -1500 V
+    invalid_coupled_point = (
+        3000.0,
+        1500.0,
+        10.0,
+        -10.0,
+    )
+
+    for axis, value in zip(
+        problem.axes,
+        invalid_coupled_point,
+    ):
+        assert (
+            axis.minimum
+            <= value
+            <= axis.maximum
+        )
+
+    assert (
+        problem.is_allowed(
+            invalid_coupled_point
+        )
+        is False
+    )
+
+    valid_shifted_point = (
+        1000.0,
+        500.0,
+        10.0,
+        -10.0,
+    )
+
+    assert (
+        problem.is_allowed(
+            valid_shifted_point
+        )
+        is True
+    )
+
+    # Reuse canonical ComparisonPolicy semantics.
+    incumbent = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.0,
+        sem=0.0,
+    )
+
+    too_small = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.005,
+        sem=0.0,
+    )
+
+    meaningful = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.02,
+        sem=0.0,
+    )
+
+    assert (
+        problem.is_better(
+            too_small,
+            incumbent,
+        )
+        is False
+    )
+
+    assert (
+        problem.is_better(
+            meaningful,
+            incumbent,
+        )
+        is True
+    )
+
+    # Local optimizer geometry must not mutate persistent
+    # MassProfile knowledge.
+    assert (
+        profile.to_dict()
+        == before
+    )
