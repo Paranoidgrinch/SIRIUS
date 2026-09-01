@@ -16,6 +16,9 @@ from sirius.comparison import (
 from sirius.cup2_optimizer import (
     cup2_primary_rcds_production_policy,
 )
+from sirius.cup4_optimizer import (
+    cup4_primary_rcds_production_policy,
+)
 from sirius.default_stages import (
     DefaultStageResources,
     build_default_stages,
@@ -223,6 +226,18 @@ class SiriusRuntimeResources:
             ),
         }
 
+        cup4 = {
+            "primary_rcds_policy": (
+                cup4_primary_rcds_production_policy()
+            ),
+
+            # Explicit runtime resources come last and
+            # therefore override the default, including None.
+            **dict(
+                self.cup4
+            ),
+        }
+
         return DefaultStageResources(
             shared=shared,
 
@@ -234,9 +249,7 @@ class SiriusRuntimeResources:
 
             cup3=cup3,
 
-            cup4=dict(
-                self.cup4
-            ),
+            cup4=cup4,
 
             cup5=dict(
                 self.cup5

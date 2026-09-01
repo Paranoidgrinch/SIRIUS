@@ -553,3 +553,113 @@ def test_runtime_cup2_rcds_policy_reaches_real_optimizer_call_contract():
         ]
         is None
     )
+
+
+def test_runtime_enables_bounded_cup4_rcds_by_default():
+    resources = SiriusRuntimeResources(
+        profile=object(),
+        tracker=object(),
+        settling_policies={},
+        measurement_policy=(
+            MeasurementPolicy()
+        ),
+        comparison_policy=(
+            ComparisonPolicy()
+        ),
+        rfq_hardware=object(),
+        lc_candidates=(),
+        rfq_matching_policy=object(),
+        rfq_q_policy=object(),
+        target_q=0.45,
+    )
+
+    stage_resources = (
+        resources
+        .to_default_stage_resources()
+        .for_stage(
+            SiriusStage.CUP4
+        )
+    )
+
+    policy = stage_resources[
+        "primary_rcds_policy"
+    ]
+
+    assert (
+        policy.max_iterations
+        == 2
+    )
+
+    assert (
+        policy.max_evaluations
+        == 91
+    )
+
+    assert (
+        policy.line_samples
+        == 7
+    )
+
+    assert (
+        policy.line_half_width
+        == pytest.approx(
+            0.35
+        )
+    )
+
+    assert (
+        policy.parabolic_refinement
+        is True
+    )
+
+    assert (
+        policy.reuse_cached_evaluations
+        is False
+    )
+
+
+def test_runtime_allows_explicit_legacy_cup4_override():
+    resources = SiriusRuntimeResources(
+        profile=object(),
+        tracker=object(),
+        settling_policies={},
+        measurement_policy=(
+            MeasurementPolicy()
+        ),
+        comparison_policy=(
+            ComparisonPolicy()
+        ),
+        rfq_hardware=object(),
+        lc_candidates=(),
+        rfq_matching_policy=object(),
+        rfq_q_policy=object(),
+        target_q=0.45,
+        cup4={
+            "primary_rcds_policy":
+                None,
+            "runtime_test_marker":
+                "legacy",
+        },
+    )
+
+    stage_resources = (
+        resources
+        .to_default_stage_resources()
+        .for_stage(
+            SiriusStage.CUP4
+        )
+    )
+
+    assert (
+        stage_resources[
+            "primary_rcds_policy"
+        ]
+        is None
+    )
+
+    assert (
+        stage_resources[
+            "runtime_test_marker"
+        ]
+        == "legacy"
+    )
