@@ -2849,3 +2849,153 @@ def test_opt_in_primary_rcds_replaces_legacy_scans(
         ]
         == result.final_state.state_id
     )
+
+
+def test_cup4_primary_rcds_production_policy_has_derived_measurement_budget():
+    policy = (
+        module.cup4_primary_rcds_production_policy()
+    )
+
+    generic = module.RCDSPolicy()
+
+    # Preserve the current robust generic line-search geometry.
+    assert (
+        policy.line_samples
+        == generic.line_samples
+        == 7
+    )
+
+    assert (
+        policy.line_half_width
+        == pytest.approx(
+            generic.line_half_width
+        )
+    )
+
+    assert (
+        policy.minimum_direction_norm
+        == pytest.approx(
+            generic.minimum_direction_norm
+        )
+    )
+
+    assert (
+        policy.stall_iterations
+        == generic.stall_iterations
+        == 2
+    )
+
+    assert (
+        policy.parabolic_refinement
+        is True
+    )
+
+    # Generic/offline RCDS retains historical cache behavior.
+    assert (
+        generic.reuse_cached_evaluations
+        is True
+    )
+
+    # Live Cup-4 optimization must freshly measure repeated
+    # physical points instead of reusing cached beam data.
+    assert (
+        policy.reuse_cached_evaluations
+        is False
+    )
+
+    dimension = len(
+        module.CUP4_RCDS_AXIS_NAMES
+    )
+
+    assert (
+        dimension
+        == 4
+    )
+
+    # Keep the live RCDS iteration scale aligned with the
+    # existing two-pass Cup-4 local steering optimization.
+    assert (
+        policy.max_iterations
+        == module.Cup4OptimizationPolicy().steerer_passes
+        == 2
+    )
+
+    # The current RCDS _line_grid() returns line_samples values
+    # and may additionally insert alpha=0.
+    #
+    # Cache reuse is disabled, so that inserted origin is a real
+    # repeated machine measurement.
+    max_grid_evaluations_per_line = (
+        policy.line_samples
+        + 1
+    )
+
+    # Current parabolic refinement can add at most one further
+    # real evaluation to a completed line search.
+    max_real_evaluations_per_line = (
+        max_grid_evaluations_per_line
+        + (
+            1
+            if policy.parabolic_refinement
+            else 0
+        )
+    )
+
+    # Four coordinate directions plus at most one conjugate
+    # direction are searched in each RCDS iteration.
+    max_line_searches_per_iteration = (
+        dimension
+        + 1
+    )
+
+    worst_case_optimizer_evaluations = (
+        1
+        + policy.max_iterations
+        * max_line_searches_per_iteration
+        * max_real_evaluations_per_line
+    )
+
+    assert (
+        max_grid_evaluations_per_line
+        == 8
+    )
+
+    assert (
+        max_real_evaluations_per_line
+        == 9
+    )
+
+    assert (
+        max_line_searches_per_iteration
+        == 5
+    )
+
+    assert (
+        worst_case_optimizer_evaluations
+        == 91
+    )
+
+    assert (
+        policy.max_evaluations
+        == worst_case_optimizer_evaluations
+    )
+
+    # _confirm_primary_rcds_best() performs one additional fresh
+    # Cup-4 measurement after optimizer.optimize().
+    assert (
+        policy.max_evaluations
+        + 1
+        == module.CUP4_PRIMARY_RCDS_MAX_CUP4_MEASUREMENTS
+        == 92
+    )
+
+    # The generic optimizer remains intentionally broader.
+    assert (
+        generic.max_iterations
+        == 12
+    )
+
+    assert (
+        generic.max_evaluations
+        == 300
+    )

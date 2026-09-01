@@ -89,6 +89,9 @@ CUP4_RCDS_AXIS_NAMES = (
     *CUP4_STEERER_PARAMETERS,
 )
 
+
+CUP4_PRIMARY_RCDS_MAX_CUP4_MEASUREMENTS = 92
+
 # Everything established upstream of the QPT is frozen during Cup 4.
 CUP4_FROZEN_UPSTREAM_PARAMETERS = (
     "sputter_voltage_v",
@@ -185,6 +188,22 @@ class Cup4OptimizationPolicy:
             raise ValueError(
                 "steerer_passes must be at least 1"
             )
+
+
+def cup4_primary_rcds_production_policy(
+) -> RCDSPolicy:
+    """Return the bounded live-machine Cup-4 RCDS policy."""
+
+    return RCDSPolicy(
+        max_iterations=2,
+        max_evaluations=91,
+        line_samples=7,
+        line_half_width=0.35,
+        minimum_direction_norm=1e-6,
+        stall_iterations=2,
+        parabolic_refinement=True,
+        reuse_cached_evaluations=False,
+    )
 
 
 @dataclass(frozen=True)
