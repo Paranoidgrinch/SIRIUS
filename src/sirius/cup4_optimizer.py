@@ -191,14 +191,18 @@ class Cup4OptimizationPolicy:
 class Cup4OptimizationResult:
     initial_state: MachineState
 
-    initial_qpt_scan: QPT2DScanResult
+    initial_qpt_scan: (
+        QPT2DScanResult | None
+    )
 
     steerer_scans: tuple[
         TransmissionScanResult,
         ...
     ]
 
-    final_qpt_scan: QPT2DScanResult
+    final_qpt_scan: (
+        QPT2DScanResult | None
+    )
 
     reference_checks: tuple[
         SourceReferenceCheckResult,
@@ -210,6 +214,14 @@ class Cup4OptimizationResult:
     final_measurement: BeamMeasurement
     final_reference: SourceReference
     final_transmission: TransmissionResult
+
+    primary_optimization: (
+        OptimizationResult | None
+    ) = None
+
+    primary_confirmation: (
+        ObjectiveEvaluation | None
+    ) = None
 
 
 def _commands_equal(
@@ -1634,6 +1646,9 @@ def optimize_cup4(
     optimization_policy: (
         Cup4OptimizationPolicy | None
     ) = None,
+    primary_rcds_policy: (
+        RCDSPolicy | None
+    ) = None,
     noise_floor_a: float | None = None,
     logger=None,
     monotonic: Callable[
@@ -1773,15 +1788,27 @@ def optimize_cup4(
     # Phase A: coarse-to-fine QPT F/A search.
     # --------------------------------------------------------------
 
-    initial_qpt_scan = (
-        scan_qpt_focus_asymmetry_2d(
+    primary_optimization = None
+    primary_confirmation = None
+
+    if primary_rcds_policy is not None:
+        (
+            primary_optimization,
+            primary_confirmation,
+            working_state,
+        ) = _run_primary_rcds(
             adapter,
             working_state,
+            cup3_reference_state,
+            profile,
             tracker,
-            policy.qpt_scan,
             settling_policies,
             measurement_policy,
             comparison_policy,
+            policy,
+            rcds_policy=(
+                primary_rcds_policy
+            ),
             noise_floor_a=(
                 noise_floor_a
             ),
@@ -1790,132 +1817,165 @@ def optimize_cup4(
                 maintenance_hook
             ),
         )
-    )
 
-    working_state = (
-        initial_qpt_scan.final_state
-    )
+        _assert_upstream_frozen(
+            working_state,
+            cup3_reference_state,
+        )
 
-    _assert_upstream_frozen(
-        working_state,
-        cup3_reference_state,
-    )
+        _assert_qpt_common_frozen(
+            working_state,
+            frozen_common_v,
+        )
 
-    _assert_qpt_common_frozen(
-        working_state,
-        frozen_common_v,
-    )
+        initial_qpt_scan = None
+        steerer_scans = []
+        final_qpt_scan = None
 
-    # --------------------------------------------------------------
-    # Phase B: X2/Y2 local coordinate descent.
-    # --------------------------------------------------------------
+    else:
+        initial_qpt_scan = (
+            scan_qpt_focus_asymmetry_2d(
+                adapter,
+                working_state,
+                tracker,
+                policy.qpt_scan,
+                settling_policies,
+                measurement_policy,
+                comparison_policy,
+                noise_floor_a=(
+                    noise_floor_a
+                ),
+                logger=logger,
+                maintenance_hook=(
+                    maintenance_hook
+                ),
+            )
+        )
 
-    steerer_scans: list[
-        TransmissionScanResult
-    ] = []
+        working_state = (
+            initial_qpt_scan.final_state
+        )
 
-    for _ in range(
-        policy.steerer_passes
-    ):
-        for parameter_name in (
-            CUP4_STEERER_PARAMETERS
+        _assert_upstream_frozen(
+            working_state,
+            cup3_reference_state,
+        )
+
+        _assert_qpt_common_frozen(
+            working_state,
+            frozen_common_v,
+        )
+
+        # --------------------------------------------------------------
+        # Phase B: X2/Y2 local coordinate descent.
+        # --------------------------------------------------------------
+
+        steerer_scans: list[
+            TransmissionScanResult
+        ] = []
+
+        for _ in range(
+            policy.steerer_passes
         ):
-            working_state = maintenance_hook(
-                working_state
-            )
-
-            local_profile = _local_profile(
-                profile,
-                parameter_name,
-                working_state.parameters[
-                    parameter_name
-                ],
-                policy.steerer_half_width_v,
-            )
-
-            scan = (
-                scan_parameter_transmission_1d(
-                    adapter,
-                    working_state,
-                    local_profile,
-                    tracker,
-                    parameter_name,
-                    policy.steerer_scan,
-                    settling_policies,
-                    measurement_policy,
-                    comparison_policy,
-                    noise_floor_a=(
-                        noise_floor_a
-                    ),
-                    logger=logger,
-                    maintenance_hook=(
-                        maintenance_hook
-                    ),
+            for parameter_name in (
+                CUP4_STEERER_PARAMETERS
+            ):
+                working_state = maintenance_hook(
+                    working_state
                 )
-            )
 
-            working_state = (
-                scan.final_state
-            )
+                local_profile = _local_profile(
+                    profile,
+                    parameter_name,
+                    working_state.parameters[
+                        parameter_name
+                    ],
+                    policy.steerer_half_width_v,
+                )
 
-            steerer_scans.append(
-                scan
-            )
+                scan = (
+                    scan_parameter_transmission_1d(
+                        adapter,
+                        working_state,
+                        local_profile,
+                        tracker,
+                        parameter_name,
+                        policy.steerer_scan,
+                        settling_policies,
+                        measurement_policy,
+                        comparison_policy,
+                        noise_floor_a=(
+                            noise_floor_a
+                        ),
+                        logger=logger,
+                        maintenance_hook=(
+                            maintenance_hook
+                        ),
+                    )
+                )
 
-            _assert_upstream_frozen(
-                working_state,
-                cup3_reference_state,
-            )
+                working_state = (
+                    scan.final_state
+                )
 
-            _assert_qpt_common_frozen(
-                working_state,
-                frozen_common_v,
-            )
+                steerer_scans.append(
+                    scan
+                )
 
-    # --------------------------------------------------------------
-    # Phase C: final local F/A refinement after steering.
-    # --------------------------------------------------------------
+                _assert_upstream_frozen(
+                    working_state,
+                    cup3_reference_state,
+                )
 
-    working_state = maintenance_hook(
-        working_state
-    )
+                _assert_qpt_common_frozen(
+                    working_state,
+                    frozen_common_v,
+                )
 
-    final_qpt_scan = (
-        scan_qpt_focus_asymmetry_2d(
-            adapter,
-            working_state,
-            tracker,
-            policy.final_qpt_scan,
-            settling_policies,
-            measurement_policy,
-            comparison_policy,
-            noise_floor_a=(
-                noise_floor_a
-            ),
-            logger=logger,
-            maintenance_hook=(
-                maintenance_hook
-            ),
+        # --------------------------------------------------------------
+        # Phase C: final local F/A refinement after steering.
+        # --------------------------------------------------------------
+
+        working_state = maintenance_hook(
+            working_state
         )
-    )
 
-    working_state = (
-        final_qpt_scan.final_state
-    )
+        final_qpt_scan = (
+            scan_qpt_focus_asymmetry_2d(
+                adapter,
+                working_state,
+                tracker,
+                policy.final_qpt_scan,
+                settling_policies,
+                measurement_policy,
+                comparison_policy,
+                noise_floor_a=(
+                    noise_floor_a
+                ),
+                logger=logger,
+                maintenance_hook=(
+                    maintenance_hook
+                ),
+            )
+        )
 
-    _assert_upstream_frozen(
-        working_state,
-        cup3_reference_state,
-    )
+        working_state = (
+            final_qpt_scan.final_state
+        )
 
-    _assert_qpt_common_frozen(
-        working_state,
-        frozen_common_v,
-    )
+        _assert_upstream_frozen(
+            working_state,
+            cup3_reference_state,
+        )
 
-    # --------------------------------------------------------------
-    # Phase D: final source normalization and characterization.
-    # --------------------------------------------------------------
+        _assert_qpt_common_frozen(
+            working_state,
+            frozen_common_v,
+        )
+
+        # --------------------------------------------------------------
+        # Phase D: final source normalization and characterization.
+        # --------------------------------------------------------------
 
     working_state = maintenance_hook(
         working_state
@@ -2062,5 +2122,11 @@ def optimize_cup4(
         ),
         final_transmission=(
             final_transmission
+        ),
+        primary_optimization=(
+            primary_optimization
+        ),
+        primary_confirmation=(
+            primary_confirmation
         ),
     )

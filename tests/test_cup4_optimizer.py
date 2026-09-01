@@ -2533,3 +2533,319 @@ def test_run_primary_rcds_orchestrates_components(
         ]
         is fake_result
     )
+
+
+def test_opt_in_primary_rcds_replaces_legacy_scans(
+    monkeypatch,
+):
+    current = cup4_state()
+    cup3 = cup3_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    source_tracker = tracker()
+
+    # Existing test helper patches:
+    #   capture_readbacks
+    #   both legacy scan functions
+    #   final beam-current measurement
+    legacy_calls = patch_common(
+        monkeypatch
+    )
+
+    rcds_policy = module.RCDSPolicy(
+        max_iterations=1,
+        max_evaluations=10,
+        line_samples=3,
+        line_half_width=0.25,
+        stall_iterations=1,
+        parabolic_refinement=False,
+        reuse_cached_evaluations=False,
+    )
+
+    fake_optimization = object()
+    fake_confirmation = object()
+
+    parameters = dict(
+        current.parameters
+    )
+
+    # Preserve C=3000 while moving the RCDS point to:
+    #
+    # F = 1200
+    # A = 100
+    #
+    # V1 = C - F - A = 1700
+    # V2 = C         = 3000
+    # V3 = C - F + A = 1900
+    parameters[
+        QPT1_PARAMETER
+    ] = 1700.0
+
+    parameters[
+        QPT2_PARAMETER
+    ] = 3000.0
+
+    parameters[
+        QPT3_PARAMETER
+    ] = 1900.0
+
+    parameters[
+        "steerer_x2_v"
+    ] = 25.0
+
+    parameters[
+        "steerer_y2_v"
+    ] = -30.0
+
+    rcds_state = MachineState(
+        mass_u=current.mass_u,
+        cup=4,
+        stage=4,
+        role="working",
+        parameters=parameters,
+        rfq=current.rfq,
+    )
+
+    rcds_calls = []
+
+    def fake_run_primary_rcds(
+        adapter,
+        working_state,
+        cup3_reference_state,
+        received_profile,
+        received_tracker,
+        settling_policies,
+        measurement_policy,
+        comparison_policy,
+        optimization_policy,
+        *,
+        rcds_policy,
+        noise_floor_a=None,
+        logger=None,
+        maintenance_hook=None,
+    ):
+        rcds_calls.append(
+            {
+                "working_state":
+                    working_state,
+                "cup3_reference_state":
+                    cup3_reference_state,
+                "profile":
+                    received_profile,
+                "tracker":
+                    received_tracker,
+                "rcds_policy":
+                    rcds_policy,
+                "maintenance_hook":
+                    maintenance_hook,
+            }
+        )
+
+        return (
+            fake_optimization,
+            fake_confirmation,
+            rcds_state,
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_run_primary_rcds",
+        fake_run_primary_rcds,
+    )
+
+    result = module.optimize_cup4(
+        object(),
+        current,
+        cup3,
+        cup1_state(),
+        profile,
+        source_tracker,
+        policies(),
+        MeasurementPolicy(),
+        ComparisonPolicy(),
+        primary_rcds_policy=(
+            rcds_policy
+        ),
+        monotonic=lambda: 100.0,
+    )
+
+    # --------------------------------------------------------
+    # Opt-in RCDS path.
+    # --------------------------------------------------------
+
+    assert (
+        len(rcds_calls)
+        == 1
+    )
+
+    call = rcds_calls[
+        0
+    ]
+
+    assert (
+        call[
+            "working_state"
+        ].state_id
+        == current.state_id
+    )
+
+    assert (
+        call[
+            "cup3_reference_state"
+        ]
+        is cup3
+    )
+
+    assert (
+        call[
+            "profile"
+        ]
+        is profile
+    )
+
+    assert (
+        call[
+            "tracker"
+        ]
+        is source_tracker
+    )
+
+    assert (
+        call[
+            "rcds_policy"
+        ]
+        is rcds_policy
+    )
+
+    assert callable(
+        call[
+            "maintenance_hook"
+        ]
+    )
+
+    # RCDS already owns F, A, X2 and Y2. None of the legacy
+    # optimization scans may execute.
+    assert (
+        legacy_calls
+        == []
+    )
+
+    assert (
+        result.initial_qpt_scan
+        is None
+    )
+
+    assert (
+        result.final_qpt_scan
+        is None
+    )
+
+    assert (
+        result.steerer_scans
+        == ()
+    )
+
+    assert (
+        result.primary_optimization
+        is fake_optimization
+    )
+
+    assert (
+        result.primary_confirmation
+        is fake_confirmation
+    )
+
+    # --------------------------------------------------------
+    # Shared Phase D characterizes the RCDS-returned state.
+    # --------------------------------------------------------
+
+    final_qpt = module.evaluate_qpt(
+        result.final_state
+    )
+
+    assert (
+        final_qpt.command_coordinates.common_v
+        == pytest.approx(
+            3000.0
+        )
+    )
+
+    assert (
+        final_qpt.command_coordinates.global_focus_v
+        == pytest.approx(
+            1200.0
+        )
+    )
+
+    assert (
+        final_qpt.command_coordinates.asymmetry_v
+        == pytest.approx(
+            100.0
+        )
+    )
+
+    assert (
+        result.final_state.parameters[
+            "steerer_x2_v"
+        ]
+        == pytest.approx(
+            25.0
+        )
+    )
+
+    assert (
+        result.final_state.parameters[
+            "steerer_y2_v"
+        ]
+        == pytest.approx(
+            -30.0
+        )
+    )
+
+    for parameter_name in (
+        module.CUP4_FROZEN_UPSTREAM_PARAMETERS
+    ):
+        assert (
+            result.final_state.parameters[
+                parameter_name
+            ]
+            == cup3.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        result.final_state.rfq
+        == cup3.rfq
+    )
+
+    assert (
+        result.final_transmission.transmission
+        == pytest.approx(
+            0.8
+        )
+    )
+
+    # Existing MassProfile finalization must use the final RCDS
+    # state just as it uses the final legacy state.
+    for parameter_name in (
+        module.CUP4_PRIMARY_PARAMETERS
+    ):
+        assert (
+            profile.best_commands[
+                parameter_name
+            ]
+            == result.final_state.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        profile.best_state_ids[
+            "cup4_best"
+        ]
+        == result.final_state.state_id
+    )
