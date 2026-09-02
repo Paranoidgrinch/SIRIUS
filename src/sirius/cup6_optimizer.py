@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
 from sirius.comparison import ComparisonPolicy
+from sirius.optimizer_api import (
+    OptimizationAxis,
+    OptimizationProblem,
+    comparison_policy_comparator,
+)
 from sirius.mass_profile import MassProfile
 from sirius.measurement import (
     BeamMeasurement,
@@ -426,6 +431,146 @@ def _local_profile(
     )
 
     return local
+
+
+def _build_primary_rcds_problem(
+    current_state: MachineState,
+    profile: MassProfile,
+    comparison_policy: ComparisonPolicy,
+    optimization_policy: Cup6OptimizationPolicy,
+) -> OptimizationProblem:
+    """Build the local three-dimensional Cup-6 RCDS geometry."""
+
+    current_state.validate()
+    profile.validate()
+
+    if not math.isclose(
+        current_state.mass_u,
+        profile.mass_u,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            "Machine state and mass profile use different ion masses"
+        )
+
+    if current_state.cup != 6:
+        raise ValueError(
+            "Cup-6 RCDS problem requires Cup 6"
+        )
+
+    if current_state.stage not in (
+        None,
+        6,
+    ):
+        raise ValueError(
+            "Cup-6 RCDS problem requires stage 6 "
+            "or no stage assignment"
+        )
+
+    half_widths = {
+        LENS4_PARAMETER: (
+            optimization_policy
+            .initial_lens4_half_width_v
+        ),
+        CUP6_STEERER_PARAMETERS[
+            0
+        ]: (
+            optimization_policy
+            .steerer_half_width_v
+        ),
+        CUP6_STEERER_PARAMETERS[
+            1
+        ]: (
+            optimization_policy
+            .steerer_half_width_v
+        ),
+    }
+
+    axes: list[
+        OptimizationAxis
+    ] = []
+
+    initial_point: list[
+        float
+    ] = []
+
+    for parameter_name in (
+        CUP6_PRIMARY_PARAMETERS
+    ):
+        if (
+            parameter_name
+            not in current_state.parameters
+        ):
+            raise ValueError(
+                "Cup-6 state is missing "
+                f"{parameter_name}"
+            )
+
+        center = float(
+            current_state.parameters[
+                parameter_name
+            ]
+        )
+
+        local_profile = _local_profile(
+            profile,
+            parameter_name,
+            center,
+            half_widths[
+                parameter_name
+            ],
+        )
+
+        minimum, maximum = (
+            local_profile.effective_bounds(
+                parameter_name
+            )
+        )
+
+        minimum = float(
+            minimum
+        )
+
+        maximum = float(
+            maximum
+        )
+
+        if maximum <= minimum:
+            raise Cup6OptimizationError(
+                "Local RCDS bounds collapse for "
+                f"{parameter_name}: "
+                f"{minimum}..{maximum}"
+            )
+
+        axes.append(
+            OptimizationAxis(
+                name=parameter_name,
+                minimum=minimum,
+                maximum=maximum,
+            )
+        )
+
+        initial_point.append(
+            center
+        )
+
+    return OptimizationProblem(
+        axes=tuple(
+            axes
+        ),
+        initial_point=tuple(
+            initial_point
+        ),
+        maximize=True,
+        comparison=(
+            comparison_policy_comparator(
+                policy=(
+                    comparison_policy
+                )
+            )
+        ),
+    )
 
 
 def _log_reference_check(

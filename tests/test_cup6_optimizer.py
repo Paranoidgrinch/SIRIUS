@@ -691,3 +691,193 @@ def test_rfq_change_aborts():
             tracker(),
             policies(),
         )
+
+
+def test_primary_rcds_problem_uses_lens4_x3_y3_local_bounds():
+    from sirius.optimizer_api import (
+        ObjectiveEvaluation,
+    )
+
+    current = cup6_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    before = profile.to_dict()
+
+    optimization_policy = (
+        module.Cup6OptimizationPolicy(
+            initial_lens4_half_width_v=1000.0,
+            steerer_half_width_v=25.0,
+        )
+    )
+
+    comparison_policy = (
+        ComparisonPolicy(
+            uncertainty_multiple=0.0,
+            minimum_absolute_improvement_a=0.0,
+            minimum_relative_improvement=0.01,
+        )
+    )
+
+    problem = (
+        module._build_primary_rcds_problem(
+            current,
+            profile,
+            comparison_policy,
+            optimization_policy,
+        )
+    )
+
+    assert (
+        problem.dimension
+        == 3
+    )
+
+    assert tuple(
+        axis.name
+        for axis
+        in problem.axes
+    ) == (
+        module.CUP6_PRIMARY_PARAMETERS
+    )
+
+    assert (
+        problem.initial_point
+        == pytest.approx(
+            (
+                5000.0,
+                10.0,
+                -10.0,
+            )
+        )
+    )
+
+    expected_half_widths = {
+        module.LENS4_PARAMETER: (
+            optimization_policy
+            .initial_lens4_half_width_v
+        ),
+        module.CUP6_STEERER_PARAMETERS[
+            0
+        ]: (
+            optimization_policy
+            .steerer_half_width_v
+        ),
+        module.CUP6_STEERER_PARAMETERS[
+            1
+        ]: (
+            optimization_policy
+            .steerer_half_width_v
+        ),
+    }
+
+    # Every RCDS axis reuses the existing Cup-6 local-profile
+    # semantics, including hard and learned MassProfile bounds.
+    for axis, parameter_name in zip(
+        problem.axes,
+        module.CUP6_PRIMARY_PARAMETERS,
+    ):
+        center = float(
+            current.parameters[
+                parameter_name
+            ]
+        )
+
+        expected_profile = (
+            module._local_profile(
+                profile,
+                parameter_name,
+                center,
+                expected_half_widths[
+                    parameter_name
+                ],
+            )
+        )
+
+        (
+            expected_minimum,
+            expected_maximum,
+        ) = (
+            expected_profile
+            .effective_bounds(
+                parameter_name
+            )
+        )
+
+        assert (
+            axis.minimum
+            == pytest.approx(
+                expected_minimum
+            )
+        )
+
+        assert (
+            axis.maximum
+            == pytest.approx(
+                expected_maximum
+            )
+        )
+
+    assert (
+        problem.maximize
+        is True
+    )
+
+    # Cup 6 has no coupled reduced-coordinate constraint like
+    # Cup 4. The physical parameter hard/learned bounds are the
+    # complete a-priori optimizer geometry.
+    assert (
+        problem.safety_predicate
+        is None
+    )
+
+    assert (
+        problem.is_allowed(
+            problem.initial_point
+        )
+        is True
+    )
+
+    # Canonical ComparisonPolicy semantics are reused.
+    incumbent = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.0,
+        sem=0.0,
+    )
+
+    too_small = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.005,
+        sem=0.0,
+    )
+
+    meaningful = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.02,
+        sem=0.0,
+    )
+
+    assert (
+        problem.is_better(
+            too_small,
+            incumbent,
+        )
+        is False
+    )
+
+    assert (
+        problem.is_better(
+            meaningful,
+            incumbent,
+        )
+        is True
+    )
+
+    # Local optimizer geometry must not mutate persistent
+    # MassProfile knowledge.
+    assert (
+        profile.to_dict()
+        == before
+    )
