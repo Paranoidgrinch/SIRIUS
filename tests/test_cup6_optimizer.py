@@ -881,3 +881,379 @@ def test_primary_rcds_problem_uses_lens4_x3_y3_local_bounds():
         profile.to_dict()
         == before
     )
+
+
+def test_primary_rcds_evaluator_uses_safe_transition_and_transmission(
+    monkeypatch,
+):
+    current = cup6_state()
+    cup5 = cup5_state()
+    source_tracker = tracker()
+
+    transition_calls = []
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        transition_calls.append(
+            (
+                current,
+                target,
+                settling_policies,
+                select_target_cup,
+            )
+        )
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        lambda *args, **kwargs:
+            measurement(
+                8e-9
+            ),
+    )
+
+    evaluator = (
+        module._Cup6PrimaryRCDSEvaluator(
+            adapter=object(),
+            working_state=current,
+            cup5_reference_state=cup5,
+            tracker=source_tracker,
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+        )
+    )
+
+    requested_point = (
+        5200.0,
+        15.0,
+        -20.0,
+    )
+
+    evaluation = evaluator(
+        requested_point
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == 1
+    )
+
+    (
+        transition_source,
+        transition_target,
+        transition_policies,
+        select_target_cup,
+    ) = transition_calls[
+        0
+    ]
+
+    assert (
+        transition_source.state_id
+        == current.state_id
+    )
+
+    assert (
+        transition_policies
+        is evaluator.settling_policies
+    )
+
+    assert (
+        select_target_cup
+        is False
+    )
+
+    assert (
+        transition_target.parameters[
+            module.LENS4_PARAMETER
+        ]
+        == pytest.approx(
+            5200.0
+        )
+    )
+
+    assert (
+        transition_target.parameters[
+            "steerer_x3_v"
+        ]
+        == pytest.approx(
+            15.0
+        )
+    )
+
+    assert (
+        transition_target.parameters[
+            "steerer_y3_v"
+        ]
+        == pytest.approx(
+            -20.0
+        )
+    )
+
+    # The complete upstream Cup-5 transport solution remains
+    # unchanged, including ESA and the RFQ state.
+    for parameter_name in (
+        module.CUP6_FROZEN_UPSTREAM_PARAMETERS
+    ):
+        assert (
+            transition_target.parameters[
+                parameter_name
+            ]
+            == cup5.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        transition_target.rfq
+        == cup5.rfq
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == transition_target.state_id
+    )
+
+    assert (
+        evaluation.point
+        == pytest.approx(
+            requested_point
+        )
+    )
+
+    assert (
+        evaluation.value
+        == pytest.approx(
+            0.8
+        )
+    )
+
+    assert (
+        evaluation.safe
+        is True
+    )
+
+    assert (
+        evaluation.below_noise_floor
+        is False
+    )
+
+    assert (
+        evaluation.metadata[
+            "requested_state_id"
+        ]
+        == transition_target.state_id
+    )
+
+    assert (
+        evaluation.metadata[
+            "observed_state_id"
+        ]
+        == transition_target.state_id
+    )
+
+    assert (
+        evaluation.metadata[
+            "reference_state_id"
+        ]
+        == "cup1-reference"
+    )
+
+
+def test_primary_rcds_evaluator_tracks_actual_machine_state_between_calls(
+    monkeypatch,
+):
+    current = cup6_state()
+    cup5 = cup5_state()
+
+    transition_calls = []
+
+    def fake_apply_state(
+        adapter,
+        *,
+        current,
+        target,
+        settling_policies,
+        select_target_cup,
+    ):
+        transition_calls.append(
+            (
+                current,
+                target,
+            )
+        )
+
+        return SimpleNamespace(
+            observed_state=target
+        )
+
+    monkeypatch.setattr(
+        module,
+        "apply_state",
+        fake_apply_state,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "measure_beam_current",
+        lambda *args, **kwargs:
+            measurement(
+                8e-9
+            ),
+    )
+
+    evaluator = (
+        module._Cup6PrimaryRCDSEvaluator(
+            adapter=object(),
+            working_state=current,
+            cup5_reference_state=cup5,
+            tracker=tracker(),
+            settling_policies=policies(),
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+        )
+    )
+
+    first_point = (
+        5100.0,
+        12.0,
+        -12.0,
+    )
+
+    second_point = (
+        4900.0,
+        5.0,
+        -8.0,
+    )
+
+    first = evaluator(
+        first_point
+    )
+
+    second = evaluator(
+        second_point
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == 2
+    )
+
+    first_source, first_target = (
+        transition_calls[
+            0
+        ]
+    )
+
+    second_source, second_target = (
+        transition_calls[
+            1
+        ]
+    )
+
+    assert (
+        first_source.state_id
+        == current.state_id
+    )
+
+    # Evaluation N+1 must begin from the actual observed state
+    # left by evaluation N.
+    assert (
+        second_source.state_id
+        == first_target.state_id
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == second_target.state_id
+    )
+
+    assert (
+        first.point
+        == pytest.approx(
+            first_point
+        )
+    )
+
+    assert (
+        second.point
+        == pytest.approx(
+            second_point
+        )
+    )
+
+    assert (
+        second_target.parameters[
+            module.LENS4_PARAMETER
+        ]
+        == pytest.approx(
+            second_point[
+                0
+            ]
+        )
+    )
+
+    assert (
+        second_target.parameters[
+            "steerer_x3_v"
+        ]
+        == pytest.approx(
+            second_point[
+                1
+            ]
+        )
+    )
+
+    assert (
+        second_target.parameters[
+            "steerer_y3_v"
+        ]
+        == pytest.approx(
+            second_point[
+                2
+            ]
+        )
+    )
+
+    for target in (
+        first_target,
+        second_target,
+    ):
+        for parameter_name in (
+            module.CUP6_FROZEN_UPSTREAM_PARAMETERS
+        ):
+            assert (
+                target.parameters[
+                    parameter_name
+                ]
+                == cup5.parameters[
+                    parameter_name
+                ]
+            )
+
+        assert (
+            target.rfq
+            == cup5.rfq
+        )
