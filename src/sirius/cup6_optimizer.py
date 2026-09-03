@@ -63,6 +63,9 @@ CUP6_PRIMARY_PARAMETERS = (
     *CUP6_STEERER_PARAMETERS,
 )
 
+
+CUP6_PRIMARY_RCDS_MAX_CUP6_MEASUREMENTS = 74
+
 # Complete transport solution established before Cup 6.
 CUP6_FROZEN_UPSTREAM_PARAMETERS = (
     # Cup 1
@@ -189,6 +192,22 @@ class Cup6OptimizationPolicy:
             raise ValueError(
                 "steerer_passes must be at least 1"
             )
+
+
+def cup6_primary_rcds_production_policy(
+) -> RCDSPolicy:
+    """Return the bounded live-machine Cup-6 RCDS policy."""
+
+    return RCDSPolicy(
+        max_iterations=2,
+        max_evaluations=73,
+        line_samples=7,
+        line_half_width=0.35,
+        minimum_direction_norm=1e-6,
+        stall_iterations=2,
+        parabolic_refinement=True,
+        reuse_cached_evaluations=False,
+    )
 
 
 @dataclass(frozen=True)

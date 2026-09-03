@@ -2584,3 +2584,149 @@ def test_opt_in_primary_rcds_replaces_legacy_scans(
         ]
         == result.final_state.state_id
     )
+
+
+def test_cup6_primary_rcds_production_policy_has_derived_measurement_budget():
+    policy = (
+        module.cup6_primary_rcds_production_policy()
+    )
+
+    generic = module.RCDSPolicy()
+
+    # Preserve the current robust generic line-search geometry.
+    assert (
+        policy.line_samples
+        == generic.line_samples
+        == 7
+    )
+
+    assert (
+        policy.line_half_width
+        == pytest.approx(
+            generic.line_half_width
+        )
+    )
+
+    assert (
+        policy.minimum_direction_norm
+        == pytest.approx(
+            generic.minimum_direction_norm
+        )
+    )
+
+    assert (
+        policy.stall_iterations
+        == generic.stall_iterations
+        == 2
+    )
+
+    assert (
+        policy.parabolic_refinement
+        is True
+    )
+
+    # Generic/offline RCDS retains historical caching.
+    assert (
+        generic.reuse_cached_evaluations
+        is True
+    )
+
+    # Repeated live Cup-6 points must be freshly measured.
+    assert (
+        policy.reuse_cached_evaluations
+        is False
+    )
+
+    dimension = len(
+        module.CUP6_PRIMARY_PARAMETERS
+    )
+
+    assert (
+        dimension
+        == 3
+    )
+
+    # Keep live RCDS iteration count aligned with the current
+    # two-pass Cup-6 local-steering scale.
+    assert (
+        policy.max_iterations
+        == module.Cup6OptimizationPolicy().steerer_passes
+        == 2
+    )
+
+    # _line_grid() returns line_samples values and can insert
+    # alpha=0 when it is not already represented.
+    max_grid_evaluations_per_line = (
+        policy.line_samples
+        + 1
+    )
+
+    # One additional fresh parabolic vertex evaluation is the
+    # current maximum refinement cost.
+    max_real_evaluations_per_line = (
+        max_grid_evaluations_per_line
+        + (
+            1
+            if policy.parabolic_refinement
+            else 0
+        )
+    )
+
+    # Three coordinate directions plus at most one conjugate
+    # direction per RCDS iteration.
+    max_line_searches_per_iteration = (
+        dimension
+        + 1
+    )
+
+    worst_case_optimizer_evaluations = (
+        1
+        + policy.max_iterations
+        * max_line_searches_per_iteration
+        * max_real_evaluations_per_line
+    )
+
+    assert (
+        max_grid_evaluations_per_line
+        == 8
+    )
+
+    assert (
+        max_real_evaluations_per_line
+        == 9
+    )
+
+    assert (
+        max_line_searches_per_iteration
+        == 4
+    )
+
+    assert (
+        worst_case_optimizer_evaluations
+        == 73
+    )
+
+    assert (
+        policy.max_evaluations
+        == worst_case_optimizer_evaluations
+    )
+
+    # _confirm_primary_rcds_best() performs one additional
+    # fresh Cup-6 measurement.
+    assert (
+        policy.max_evaluations
+        + 1
+        == module.CUP6_PRIMARY_RCDS_MAX_CUP6_MEASUREMENTS
+        == 74
+    )
+
+    # Generic optimizer remains intentionally broader.
+    assert (
+        generic.max_iterations
+        == 12
+    )
+
+    assert (
+        generic.max_evaluations
+        == 300
+    )
