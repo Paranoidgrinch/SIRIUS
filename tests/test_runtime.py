@@ -1039,3 +1039,278 @@ def test_runtime_allows_explicit_legacy_cup6_override():
         ]
         == "legacy"
     )
+
+
+def test_runtime_cup6_rcds_policy_reaches_real_optimizer_call_contract():
+    def make_resources(
+        *,
+        cup6=None,
+    ):
+        return SiriusRuntimeResources(
+            profile=object(),
+            tracker=object(),
+            settling_policies={},
+            measurement_policy=(
+                MeasurementPolicy()
+            ),
+            comparison_policy=(
+                ComparisonPolicy()
+            ),
+            rfq_hardware=object(),
+            lc_candidates=(),
+            rfq_matching_policy=object(),
+            rfq_q_policy=object(),
+            target_q=0.45,
+            cup6=(
+                {}
+                if cup6 is None
+                else cup6
+            ),
+        )
+
+    cup1 = state(
+        1
+    )
+
+    # Cup 6 is entered directly from the completed Cup-5 state.
+    current = state(
+        5
+    )
+
+    ctx = SiriusRunContext(
+        config=config(),
+        adapter=object(),
+        logger=None,
+    )
+
+    # Cup-6 source-reference maintenance uses the completed
+    # Cup-1 reference from run history.
+    ctx.record_completed_state(
+        SiriusStage.CUP1,
+        cup1,
+    )
+
+    real_optimize_cup6 = (
+        default_module
+        ._load_stage_function(
+            SiriusStage.CUP6
+        )
+    )
+
+    assert (
+        real_optimize_cup6.__name__
+        == "optimize_cup6"
+    )
+
+    # --------------------------------------------------------
+    # Runtime production default.
+    #
+    # At the real optimize_cup6 signature:
+    #
+    #   current_state          <- incoming Cup-5 state
+    #   cup5_reference_state   <- same incoming Cup-5 state
+    #   cup1_reference_state   <- completed Cup-1 history
+    #   primary_rcds_policy    <- bounded live policy
+    # --------------------------------------------------------
+
+    default_resources = (
+        make_resources()
+        .to_default_stage_resources()
+        .for_stage(
+            SiriusStage.CUP6
+        )
+    )
+
+    default_policy = (
+        default_resources[
+            "primary_rcds_policy"
+        ]
+    )
+
+    args, kwargs = (
+        default_module
+        ._prepare_call(
+            real_optimize_cup6,
+            stage=(
+                SiriusStage.CUP6
+            ),
+            state=current,
+            context=ctx,
+            resources=(
+                default_resources
+            ),
+        )
+    )
+
+    assert (
+        args
+        == []
+    )
+
+    assert (
+        kwargs[
+            "adapter"
+        ]
+        is ctx.adapter
+    )
+
+    assert (
+        kwargs[
+            "current_state"
+        ]
+        is current
+    )
+
+    # For Cup 6, the stage assembler deliberately binds the
+    # incoming Cup-5 state to both the current machine state
+    # and the frozen Cup-5 reference input.
+    assert (
+        kwargs[
+            "cup5_reference_state"
+        ]
+        is current
+    )
+
+    assert (
+        kwargs[
+            "cup1_reference_state"
+        ]
+        is cup1
+    )
+
+    assert (
+        kwargs[
+            "cup1_reference_state"
+        ]
+        is not current
+    )
+
+    assert (
+        kwargs[
+            "primary_rcds_policy"
+        ]
+        is default_policy
+    )
+
+    assert (
+        kwargs[
+            "primary_rcds_policy"
+        ].max_iterations
+        == 2
+    )
+
+    assert (
+        kwargs[
+            "primary_rcds_policy"
+        ].max_evaluations
+        == 73
+    )
+
+    assert (
+        kwargs[
+            "primary_rcds_policy"
+        ].line_samples
+        == 7
+    )
+
+    assert (
+        kwargs[
+            "primary_rcds_policy"
+        ].line_half_width
+        == pytest.approx(
+            0.35
+        )
+    )
+
+    assert (
+        kwargs[
+            "primary_rcds_policy"
+        ].parabolic_refinement
+        is True
+    )
+
+    assert (
+        kwargs[
+            "primary_rcds_policy"
+        ].reuse_cached_evaluations
+        is False
+    )
+
+    # --------------------------------------------------------
+    # Explicit legacy override.
+    #
+    # None must reach the SAME real optimize_cup6 signature.
+    # The dynamic Cup-5 and Cup-1 bindings must remain exactly
+    # the same.
+    # --------------------------------------------------------
+
+    legacy_resources = (
+        make_resources(
+            cup6={
+                "primary_rcds_policy":
+                    None,
+            }
+        )
+        .to_default_stage_resources()
+        .for_stage(
+            SiriusStage.CUP6
+        )
+    )
+
+    (
+        legacy_args,
+        legacy_kwargs,
+    ) = (
+        default_module
+        ._prepare_call(
+            real_optimize_cup6,
+            stage=(
+                SiriusStage.CUP6
+            ),
+            state=current,
+            context=ctx,
+            resources=(
+                legacy_resources
+            ),
+        )
+    )
+
+    assert (
+        legacy_args
+        == []
+    )
+
+    assert (
+        legacy_kwargs[
+            "adapter"
+        ]
+        is ctx.adapter
+    )
+
+    assert (
+        legacy_kwargs[
+            "current_state"
+        ]
+        is current
+    )
+
+    assert (
+        legacy_kwargs[
+            "cup5_reference_state"
+        ]
+        is current
+    )
+
+    assert (
+        legacy_kwargs[
+            "cup1_reference_state"
+        ]
+        is cup1
+    )
+
+    assert (
+        legacy_kwargs[
+            "primary_rcds_policy"
+        ]
+        is None
+    )
