@@ -644,3 +644,286 @@ def test_below_noise_final_current_is_rejected(
             ComparisonPolicy(),
             monotonic=lambda: 100.0,
         )
+
+
+def test_local_transport_rcds_problem_uses_f_a_x2_y2_with_coupled_qpt_feasibility():
+    from sirius.optimizer_api import (
+        ObjectiveEvaluation,
+    )
+
+    current = cup5_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    before = profile.to_dict()
+
+    # Deliberately use a wide mathematical F/A rectangle here so
+    # the test proves that the coupled physical QPT constraint is
+    # enforced independently of rectangular optimizer bounds.
+    optimization_policy = (
+        module.Cup5OptimizationPolicy(
+            steerer_half_width_v=25.0,
+            local_qpt_scan=(
+                module.QPT2DScanPolicy(
+                    initial_focus_half_width_v=2500.0,
+                    initial_asymmetry_half_width_v=2000.0,
+                    levels=(
+                        module.QPTScanLevel(
+                            focus_step_v=500.0,
+                            asymmetry_step_v=500.0,
+                        ),
+                        module.QPTScanLevel(
+                            focus_step_v=100.0,
+                            asymmetry_step_v=100.0,
+                        ),
+                    ),
+                    refinement_half_width_factor=2.0,
+                    max_points_per_level=500,
+                )
+            ),
+        )
+    )
+
+    comparison_policy = (
+        ComparisonPolicy(
+            uncertainty_multiple=0.0,
+            minimum_absolute_improvement_a=0.0,
+            minimum_relative_improvement=0.01,
+        )
+    )
+
+    problem = (
+        module._build_local_transport_rcds_problem(
+            current,
+            profile,
+            comparison_policy,
+            optimization_policy,
+        )
+    )
+
+    assert (
+        problem.dimension
+        == 4
+    )
+
+    assert tuple(
+        axis.name
+        for axis
+        in problem.axes
+    ) == (
+        module.CUP5_LOCAL_TRANSPORT_RCDS_AXIS_NAMES
+    )
+
+    assert (
+        module.ESA_PARAMETER
+        not in tuple(
+            axis.name
+            for axis
+            in problem.axes
+        )
+    )
+
+    # Current QPT commands:
+    #
+    #   V1 = 2000
+    #   V2 = 3000
+    #   V3 = 2000
+    #
+    # therefore:
+    #
+    #   C = 3000
+    #   F = 1000
+    #   A = 0
+    assert (
+        problem.initial_point
+        == pytest.approx(
+            (
+                1000.0,
+                0.0,
+                10.0,
+                -10.0,
+            )
+        )
+    )
+
+    # F/A rectangular geometry comes directly from the existing
+    # Cup-5 local_qpt_scan policy.
+    assert (
+        problem.axes[
+            0
+        ].minimum
+        == pytest.approx(
+            -1500.0
+        )
+    )
+
+    assert (
+        problem.axes[
+            0
+        ].maximum
+        == pytest.approx(
+            3500.0
+        )
+    )
+
+    assert (
+        problem.axes[
+            1
+        ].minimum
+        == pytest.approx(
+            -2000.0
+        )
+    )
+
+    assert (
+        problem.axes[
+            1
+        ].maximum
+        == pytest.approx(
+            2000.0
+        )
+    )
+
+    # X2/Y2 bounds reuse the existing local-profile semantics.
+    for (
+        axis,
+        parameter_name,
+    ) in zip(
+        problem.axes[
+            2:
+        ],
+        (
+            "steerer_x2_v",
+            "steerer_y2_v",
+        ),
+    ):
+        center = float(
+            current.parameters[
+                parameter_name
+            ]
+        )
+
+        local = module._local_profile(
+            profile,
+            parameter_name,
+            center,
+            optimization_policy
+            .steerer_half_width_v,
+        )
+
+        (
+            expected_minimum,
+            expected_maximum,
+        ) = (
+            local.effective_bounds(
+                parameter_name
+            )
+        )
+
+        assert (
+            axis.minimum
+            == pytest.approx(
+                expected_minimum
+            )
+        )
+
+        assert (
+            axis.maximum
+            == pytest.approx(
+                expected_maximum
+            )
+        )
+
+    assert (
+        problem.maximize
+        is True
+    )
+
+    assert (
+        problem.safety_predicate
+        is not None
+    )
+
+    assert (
+        problem.is_allowed(
+            problem.initial_point
+        )
+        is True
+    )
+
+    # This point is inside all four rectangular optimizer bounds,
+    # but with frozen C=3000 it implies:
+    #
+    #   V1 = C - F - A = -1500 V
+    #
+    # which violates the verified physical QPT range 0..6000 V.
+    coupled_invalid = (
+        3000.0,
+        1500.0,
+        10.0,
+        -10.0,
+    )
+
+    for (
+        axis,
+        value,
+    ) in zip(
+        problem.axes,
+        coupled_invalid,
+    ):
+        assert (
+            axis.minimum
+            <= value
+            <= axis.maximum
+        )
+
+    assert (
+        problem.is_allowed(
+            coupled_invalid
+        )
+        is False
+    )
+
+    # Canonical ComparisonPolicy semantics are reused.
+    incumbent = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.0,
+        sem=0.0,
+    )
+
+    too_small = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.005,
+        sem=0.0,
+    )
+
+    meaningful = ObjectiveEvaluation(
+        point=problem.initial_point,
+        value=1.02,
+        sem=0.0,
+    )
+
+    assert (
+        problem.is_better(
+            too_small,
+            incumbent,
+        )
+        is False
+    )
+
+    assert (
+        problem.is_better(
+            meaningful,
+            incumbent,
+        )
+        is True
+    )
+
+    # Building local optimizer geometry must not mutate persistent
+    # learned MassProfile knowledge.
+    assert (
+        profile.to_dict()
+        == before
+    )

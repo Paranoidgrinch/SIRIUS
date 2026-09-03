@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
 from sirius.comparison import ComparisonPolicy
+from sirius.optimizer_api import (
+    OptimizationAxis,
+    OptimizationProblem,
+    comparison_policy_comparator,
+)
 from sirius.esa_model import (
     ESAVoltagePrediction,
     evaluate_esa,
@@ -25,6 +30,7 @@ from sirius.qpt_model import (
     QPT2_PARAMETER,
     QPT3_PARAMETER,
     evaluate_qpt,
+    qpt_cfa_is_feasible,
 )
 from sirius.qpt_scan2d import (
     QPT2DScanPolicy,
@@ -66,6 +72,14 @@ CUP5_QPT_PARAMETERS = (
 
 CUP5_LOCAL_RETUNE_PARAMETERS = (
     *CUP5_QPT_PARAMETERS,
+    "steerer_x2_v",
+    "steerer_y2_v",
+)
+
+
+CUP5_LOCAL_TRANSPORT_RCDS_AXIS_NAMES = (
+    "qpt_global_focus_v",
+    "qpt_asymmetry_v",
     "steerer_x2_v",
     "steerer_y2_v",
 )
@@ -402,6 +416,236 @@ def _local_profile(
     )
 
     return local
+
+
+def _build_local_transport_rcds_problem(
+    current_state: MachineState,
+    profile: MassProfile,
+    comparison_policy: ComparisonPolicy,
+    optimization_policy: Cup5OptimizationPolicy,
+) -> OptimizationProblem:
+    """
+    Build the four-dimensional Cup-5 local transport RCDS geometry.
+
+    Optimizer coordinates:
+        F, A, X2, Y2
+
+    QPT common mode C is frozen to its current command value.
+    ESA is deliberately excluded from this optimization problem.
+    """
+
+    current_state.validate()
+    profile.validate()
+
+    if not math.isclose(
+        current_state.mass_u,
+        profile.mass_u,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            "Machine state and mass profile use different ion masses"
+        )
+
+    if current_state.cup != 5:
+        raise ValueError(
+            "Cup-5 local transport RCDS problem requires Cup 5"
+        )
+
+    if current_state.stage not in (
+        None,
+        5,
+    ):
+        raise ValueError(
+            "Cup-5 local transport RCDS problem requires "
+            "stage 5 or no stage assignment"
+        )
+
+    for parameter_name in (
+        *CUP5_LOCAL_RETUNE_PARAMETERS,
+        ESA_PARAMETER,
+    ):
+        if (
+            parameter_name
+            not in current_state.parameters
+        ):
+            raise ValueError(
+                "Cup-5 state is missing "
+                f"{parameter_name}"
+            )
+
+    coordinates = (
+        evaluate_qpt(
+            current_state
+        ).command_coordinates
+    )
+
+    frozen_common_v = float(
+        coordinates.common_v
+    )
+
+    initial_focus_v = float(
+        coordinates.global_focus_v
+    )
+
+    initial_asymmetry_v = float(
+        coordinates.asymmetry_v
+    )
+
+    qpt_policy = (
+        optimization_policy.local_qpt_scan
+    )
+
+    axes: list[
+        OptimizationAxis
+    ] = [
+        OptimizationAxis(
+            name=(
+                CUP5_LOCAL_TRANSPORT_RCDS_AXIS_NAMES[
+                    0
+                ]
+            ),
+            minimum=(
+                initial_focus_v
+                - float(
+                    qpt_policy
+                    .initial_focus_half_width_v
+                )
+            ),
+            maximum=(
+                initial_focus_v
+                + float(
+                    qpt_policy
+                    .initial_focus_half_width_v
+                )
+            ),
+        ),
+
+        OptimizationAxis(
+            name=(
+                CUP5_LOCAL_TRANSPORT_RCDS_AXIS_NAMES[
+                    1
+                ]
+            ),
+            minimum=(
+                initial_asymmetry_v
+                - float(
+                    qpt_policy
+                    .initial_asymmetry_half_width_v
+                )
+            ),
+            maximum=(
+                initial_asymmetry_v
+                + float(
+                    qpt_policy
+                    .initial_asymmetry_half_width_v
+                )
+            ),
+        ),
+    ]
+
+    initial_point: list[
+        float
+    ] = [
+        initial_focus_v,
+        initial_asymmetry_v,
+    ]
+
+    for parameter_name in (
+        "steerer_x2_v",
+        "steerer_y2_v",
+    ):
+        center = float(
+            current_state.parameters[
+                parameter_name
+            ]
+        )
+
+        local = _local_profile(
+            profile,
+            parameter_name,
+            center,
+            optimization_policy
+            .steerer_half_width_v,
+        )
+
+        minimum, maximum = (
+            local.effective_bounds(
+                parameter_name
+            )
+        )
+
+        minimum = float(
+            minimum
+        )
+
+        maximum = float(
+            maximum
+        )
+
+        if maximum <= minimum:
+            raise Cup5OptimizationError(
+                "Local RCDS bounds collapse for "
+                f"{parameter_name}: "
+                f"{minimum}..{maximum}"
+            )
+
+        axes.append(
+            OptimizationAxis(
+                name=parameter_name,
+                minimum=minimum,
+                maximum=maximum,
+            )
+        )
+
+        initial_point.append(
+            center
+        )
+
+    def qpt_feasible(
+        point: tuple[
+            float,
+            ...
+        ],
+    ) -> bool:
+        if len(
+            point
+        ) != 4:
+            return False
+
+        return qpt_cfa_is_feasible(
+            frozen_common_v,
+            float(
+                point[
+                    0
+                ]
+            ),
+            float(
+                point[
+                    1
+                ]
+            ),
+        )
+
+    return OptimizationProblem(
+        axes=tuple(
+            axes
+        ),
+        initial_point=tuple(
+            initial_point
+        ),
+        maximize=True,
+        safety_predicate=(
+            qpt_feasible
+        ),
+        comparison=(
+            comparison_policy_comparator(
+                policy=(
+                    comparison_policy
+                )
+            )
+        ),
+    )
 
 
 def _apply_esa_seed(
