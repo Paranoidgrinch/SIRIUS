@@ -195,14 +195,18 @@ class Cup6OptimizationPolicy:
 class Cup6OptimizationResult:
     initial_state: MachineState
 
-    initial_lens4_scan: TransmissionScanResult
+    initial_lens4_scan: (
+        TransmissionScanResult | None
+    )
 
     steerer_scans: tuple[
         TransmissionScanResult,
         ...
     ]
 
-    final_lens4_scan: TransmissionScanResult
+    final_lens4_scan: (
+        TransmissionScanResult | None
+    )
 
     reference_checks: tuple[
         SourceReferenceCheckResult,
@@ -214,6 +218,14 @@ class Cup6OptimizationResult:
     final_measurement: BeamMeasurement
     final_reference: SourceReference
     final_transmission: TransmissionResult
+
+    primary_optimization: (
+        OptimizationResult | None
+    ) = None
+
+    primary_confirmation: (
+        ObjectiveEvaluation | None
+    ) = None
 
 
 def _commands_equal(
@@ -1417,6 +1429,9 @@ def optimize_cup6(
     optimization_policy: (
         Cup6OptimizationPolicy | None
     ) = None,
+    primary_rcds_policy: (
+        RCDSPolicy | None
+    ) = None,
     noise_floor_a: float | None = None,
     logger=None,
     monotonic: Callable[
@@ -1534,30 +1549,31 @@ def optimize_cup6(
     # Phase A: gross/fine Lens4 focusing.
     # --------------------------------------------------------------
 
-    working_state = maintenance_hook(
-        working_state
-    )
+    primary_optimization = None
+    primary_confirmation = None
 
-    lens4_profile = _local_profile(
-        profile,
-        LENS4_PARAMETER,
-        working_state.parameters[
-            LENS4_PARAMETER
-        ],
-        policy.initial_lens4_half_width_v,
-    )
+    if primary_rcds_policy is not None:
+        working_state = maintenance_hook(
+            working_state
+        )
 
-    initial_lens4_scan = (
-        scan_parameter_transmission_1d(
+        (
+            primary_optimization,
+            primary_confirmation,
+            working_state,
+        ) = _run_primary_rcds(
             adapter,
             working_state,
-            lens4_profile,
+            cup5_reference_state,
+            profile,
             tracker,
-            LENS4_PARAMETER,
-            policy.initial_lens4_scan,
             settling_policies,
             measurement_policy,
             comparison_policy,
+            policy,
+            rcds_policy=(
+                primary_rcds_policy
+            ),
             noise_floor_a=(
                 noise_floor_a
             ),
@@ -1566,132 +1582,175 @@ def optimize_cup6(
                 maintenance_hook
             ),
         )
-    )
 
-    working_state = (
-        initial_lens4_scan.final_state
-    )
+        _assert_upstream_frozen(
+            working_state,
+            cup5_reference_state,
+        )
 
-    _assert_upstream_frozen(
-        working_state,
-        cup5_reference_state,
-    )
+        initial_lens4_scan = None
+        steerer_scans = []
+        final_lens4_scan = None
 
-    # --------------------------------------------------------------
-    # Phase B: X3/Y3 local steering.
-    # --------------------------------------------------------------
+    else:
+        working_state = maintenance_hook(
+            working_state
+        )
 
-    steerer_scans: list[
-        TransmissionScanResult
-    ] = []
-
-    for _ in range(
-        policy.steerer_passes
-    ):
-        for parameter_name in (
-            CUP6_STEERER_PARAMETERS
-        ):
-            working_state = (
-                maintenance_hook(
-                    working_state
-                )
-            )
-
-            local_profile = _local_profile(
-                profile,
-                parameter_name,
-                working_state.parameters[
-                    parameter_name
-                ],
-                policy.steerer_half_width_v,
-            )
-
-            scan = (
-                scan_parameter_transmission_1d(
-                    adapter,
-                    working_state,
-                    local_profile,
-                    tracker,
-                    parameter_name,
-                    policy.steerer_scan,
-                    settling_policies,
-                    measurement_policy,
-                    comparison_policy,
-                    noise_floor_a=(
-                        noise_floor_a
-                    ),
-                    logger=logger,
-                    maintenance_hook=(
-                        maintenance_hook
-                    ),
-                )
-            )
-
-            working_state = (
-                scan.final_state
-            )
-
-            steerer_scans.append(
-                scan
-            )
-
-            _assert_upstream_frozen(
-                working_state,
-                cup5_reference_state,
-            )
-
-    # --------------------------------------------------------------
-    # Phase C: final Lens4 refinement after beam centering.
-    # --------------------------------------------------------------
-
-    working_state = maintenance_hook(
-        working_state
-    )
-
-    final_lens4_profile = (
-        _local_profile(
+        lens4_profile = _local_profile(
             profile,
             LENS4_PARAMETER,
             working_state.parameters[
                 LENS4_PARAMETER
             ],
-            policy.final_lens4_half_width_v,
+            policy.initial_lens4_half_width_v,
         )
-    )
 
-    final_lens4_scan = (
-        scan_parameter_transmission_1d(
-            adapter,
+        initial_lens4_scan = (
+            scan_parameter_transmission_1d(
+                adapter,
+                working_state,
+                lens4_profile,
+                tracker,
+                LENS4_PARAMETER,
+                policy.initial_lens4_scan,
+                settling_policies,
+                measurement_policy,
+                comparison_policy,
+                noise_floor_a=(
+                    noise_floor_a
+                ),
+                logger=logger,
+                maintenance_hook=(
+                    maintenance_hook
+                ),
+            )
+        )
+
+        working_state = (
+            initial_lens4_scan.final_state
+        )
+
+        _assert_upstream_frozen(
             working_state,
-            final_lens4_profile,
-            tracker,
-            LENS4_PARAMETER,
-            policy.final_lens4_scan,
-            settling_policies,
-            measurement_policy,
-            comparison_policy,
-            noise_floor_a=(
-                noise_floor_a
-            ),
-            logger=logger,
-            maintenance_hook=(
-                maintenance_hook
-            ),
+            cup5_reference_state,
         )
-    )
 
-    working_state = (
-        final_lens4_scan.final_state
-    )
+        # --------------------------------------------------------------
+        # Phase B: X3/Y3 local steering.
+        # --------------------------------------------------------------
 
-    _assert_upstream_frozen(
-        working_state,
-        cup5_reference_state,
-    )
+        steerer_scans: list[
+            TransmissionScanResult
+        ] = []
 
-    # --------------------------------------------------------------
-    # Phase D: final source-normalized Cup-6 measurement.
-    # --------------------------------------------------------------
+        for _ in range(
+            policy.steerer_passes
+        ):
+            for parameter_name in (
+                CUP6_STEERER_PARAMETERS
+            ):
+                working_state = (
+                    maintenance_hook(
+                        working_state
+                    )
+                )
+
+                local_profile = _local_profile(
+                    profile,
+                    parameter_name,
+                    working_state.parameters[
+                        parameter_name
+                    ],
+                    policy.steerer_half_width_v,
+                )
+
+                scan = (
+                    scan_parameter_transmission_1d(
+                        adapter,
+                        working_state,
+                        local_profile,
+                        tracker,
+                        parameter_name,
+                        policy.steerer_scan,
+                        settling_policies,
+                        measurement_policy,
+                        comparison_policy,
+                        noise_floor_a=(
+                            noise_floor_a
+                        ),
+                        logger=logger,
+                        maintenance_hook=(
+                            maintenance_hook
+                        ),
+                    )
+                )
+
+                working_state = (
+                    scan.final_state
+                )
+
+                steerer_scans.append(
+                    scan
+                )
+
+                _assert_upstream_frozen(
+                    working_state,
+                    cup5_reference_state,
+                )
+
+        # --------------------------------------------------------------
+        # Phase C: final Lens4 refinement after beam centering.
+        # --------------------------------------------------------------
+
+        working_state = maintenance_hook(
+            working_state
+        )
+
+        final_lens4_profile = (
+            _local_profile(
+                profile,
+                LENS4_PARAMETER,
+                working_state.parameters[
+                    LENS4_PARAMETER
+                ],
+                policy.final_lens4_half_width_v,
+            )
+        )
+
+        final_lens4_scan = (
+            scan_parameter_transmission_1d(
+                adapter,
+                working_state,
+                final_lens4_profile,
+                tracker,
+                LENS4_PARAMETER,
+                policy.final_lens4_scan,
+                settling_policies,
+                measurement_policy,
+                comparison_policy,
+                noise_floor_a=(
+                    noise_floor_a
+                ),
+                logger=logger,
+                maintenance_hook=(
+                    maintenance_hook
+                ),
+            )
+        )
+
+        working_state = (
+            final_lens4_scan.final_state
+        )
+
+        _assert_upstream_frozen(
+            working_state,
+            cup5_reference_state,
+        )
+
+        # --------------------------------------------------------------
+        # Phase D: final source-normalized Cup-6 measurement.
+        # --------------------------------------------------------------
 
     working_state = maintenance_hook(
         working_state
@@ -1841,5 +1900,11 @@ def optimize_cup6(
         ),
         final_transmission=(
             final_transmission
+        ),
+        primary_optimization=(
+            primary_optimization
+        ),
+        primary_confirmation=(
+            primary_confirmation
         ),
     )

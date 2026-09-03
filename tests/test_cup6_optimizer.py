@@ -2288,3 +2288,299 @@ def test_run_primary_rcds_orchestrates_components(
         ]
         is fake_result
     )
+
+
+def test_opt_in_primary_rcds_replaces_legacy_scans(
+    monkeypatch,
+):
+    current = cup6_state()
+    cup5 = cup5_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    source_tracker = tracker()
+
+    # Existing helper patches:
+    #   capture_readbacks
+    #   legacy scan_parameter_transmission_1d
+    #   final measure_beam_current
+    #
+    # In RCDS mode the legacy call list must stay empty.
+    legacy_calls = patch_common(
+        monkeypatch
+    )
+
+    rcds_policy = module.RCDSPolicy(
+        max_iterations=1,
+        max_evaluations=10,
+        line_samples=3,
+        line_half_width=0.25,
+        stall_iterations=1,
+        parabolic_refinement=False,
+        reuse_cached_evaluations=False,
+    )
+
+    fake_optimization = object()
+    fake_confirmation = object()
+
+    parameters = dict(
+        current.parameters
+    )
+
+    parameters[
+        module.LENS4_PARAMETER
+    ] = 5200.0
+
+    parameters[
+        "steerer_x3_v"
+    ] = 15.0
+
+    parameters[
+        "steerer_y3_v"
+    ] = -20.0
+
+    rcds_state = MachineState(
+        mass_u=current.mass_u,
+        cup=6,
+        stage=6,
+        role="working",
+        parameters=parameters,
+        rfq=current.rfq,
+    )
+
+    rcds_calls = []
+
+    def fake_run_primary_rcds(
+        adapter,
+        working_state,
+        cup5_reference_state,
+        received_profile,
+        received_tracker,
+        settling_policies,
+        measurement_policy,
+        comparison_policy,
+        optimization_policy,
+        *,
+        rcds_policy,
+        noise_floor_a=None,
+        logger=None,
+        maintenance_hook=None,
+    ):
+        rcds_calls.append(
+            {
+                "working_state":
+                    working_state,
+                "cup5_reference_state":
+                    cup5_reference_state,
+                "profile":
+                    received_profile,
+                "tracker":
+                    received_tracker,
+                "rcds_policy":
+                    rcds_policy,
+                "maintenance_hook":
+                    maintenance_hook,
+            }
+        )
+
+        return (
+            fake_optimization,
+            fake_confirmation,
+            rcds_state,
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_run_primary_rcds",
+        fake_run_primary_rcds,
+    )
+
+    result = module.optimize_cup6(
+        object(),
+        current,
+        cup5,
+        cup1_state(),
+        profile,
+        source_tracker,
+        policies(),
+        MeasurementPolicy(),
+        ComparisonPolicy(),
+        primary_rcds_policy=(
+            rcds_policy
+        ),
+        monotonic=lambda: 100.0,
+    )
+
+    # --------------------------------------------------------
+    # RCDS is selected exactly once.
+    # --------------------------------------------------------
+
+    assert (
+        len(
+            rcds_calls
+        )
+        == 1
+    )
+
+    call = rcds_calls[
+        0
+    ]
+
+    assert (
+        call[
+            "working_state"
+        ].state_id
+        == current.state_id
+    )
+
+    assert (
+        call[
+            "cup5_reference_state"
+        ]
+        is cup5
+    )
+
+    assert (
+        call[
+            "profile"
+        ]
+        is profile
+    )
+
+    assert (
+        call[
+            "tracker"
+        ]
+        is source_tracker
+    )
+
+    assert (
+        call[
+            "rcds_policy"
+        ]
+        is rcds_policy
+    )
+
+    assert callable(
+        call[
+            "maintenance_hook"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # No legacy Lens4/X3/Y3/Lens4 scan executes.
+    # --------------------------------------------------------
+
+    assert (
+        legacy_calls
+        == []
+    )
+
+    assert (
+        result.initial_lens4_scan
+        is None
+    )
+
+    assert (
+        result.final_lens4_scan
+        is None
+    )
+
+    assert (
+        result.steerer_scans
+        == ()
+    )
+
+    # --------------------------------------------------------
+    # RCDS artifacts are exposed through normal Cup-6 result.
+    # --------------------------------------------------------
+
+    assert (
+        result.primary_optimization
+        is fake_optimization
+    )
+
+    assert (
+        result.primary_confirmation
+        is fake_confirmation
+    )
+
+    # --------------------------------------------------------
+    # Shared Phase D characterizes the state returned by RCDS.
+    # --------------------------------------------------------
+
+    assert (
+        result.final_state.parameters[
+            module.LENS4_PARAMETER
+        ]
+        == pytest.approx(
+            5200.0
+        )
+    )
+
+    assert (
+        result.final_state.parameters[
+            "steerer_x3_v"
+        ]
+        == pytest.approx(
+            15.0
+        )
+    )
+
+    assert (
+        result.final_state.parameters[
+            "steerer_y3_v"
+        ]
+        == pytest.approx(
+            -20.0
+        )
+    )
+
+    # Complete Cup-5 solution remains frozen.
+    for parameter_name in (
+        module.CUP6_FROZEN_UPSTREAM_PARAMETERS
+    ):
+        assert (
+            result.final_state.parameters[
+                parameter_name
+            ]
+            == cup5.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        result.final_state.rfq
+        == cup5.rfq
+    )
+
+    # Existing source-normalized final characterization remains
+    # common to both optimization modes.
+    assert (
+        result.final_transmission.transmission
+        == pytest.approx(
+            0.8
+        )
+    )
+
+    # Existing MassProfile finalization must use the RCDS state.
+    for parameter_name in (
+        module.CUP6_PRIMARY_PARAMETERS
+    ):
+        assert (
+            profile.best_commands[
+                parameter_name
+            ]
+            == result.final_state.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        profile.best_state_ids[
+            "cup6_best"
+        ]
+        == result.final_state.state_id
+    )
