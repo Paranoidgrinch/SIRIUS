@@ -1915,3 +1915,376 @@ def test_primary_rcds_full_mock_integration_loop(
         )
         == result.evaluations
     )
+
+
+def test_run_primary_rcds_orchestrates_components(
+    monkeypatch,
+):
+    current = cup6_state()
+    cup5 = cup5_state()
+
+    profile = MassProfile(
+        mass_u=60.0
+    )
+
+    source_tracker = tracker()
+    settling = policies()
+
+    measurement_policy = (
+        MeasurementPolicy()
+    )
+
+    comparison_policy = (
+        ComparisonPolicy(
+            uncertainty_multiple=0.0,
+            minimum_absolute_improvement_a=0.0,
+            minimum_relative_improvement=0.0,
+        )
+    )
+
+    optimization_policy = (
+        module.Cup6OptimizationPolicy()
+    )
+
+    rcds_policy = module.RCDSPolicy(
+        max_iterations=1,
+        max_evaluations=10,
+        line_samples=3,
+        line_half_width=0.25,
+        stall_iterations=1,
+        parabolic_refinement=False,
+        reuse_cached_evaluations=False,
+    )
+
+    fake_problem = object()
+    fake_result = object()
+    fake_confirmation = object()
+
+    final_state = cup6_state()
+
+    calls = []
+
+    def fake_builder(
+        working_state,
+        received_profile,
+        received_comparison_policy,
+        received_optimization_policy,
+    ):
+        calls.append(
+            (
+                "builder",
+                working_state,
+                received_profile,
+                received_comparison_policy,
+                received_optimization_policy,
+            )
+        )
+
+        return fake_problem
+
+    class FakeEvaluator:
+        def __init__(
+            self,
+            **kwargs,
+        ):
+            calls.append(
+                (
+                    "evaluator",
+                    kwargs,
+                )
+            )
+
+            self.working_state = (
+                final_state
+            )
+
+    class FakeOptimizer:
+        def __init__(
+            self,
+            policy=None,
+        ):
+            calls.append(
+                (
+                    "optimizer_init",
+                    policy,
+                )
+            )
+
+        def optimize(
+            self,
+            problem,
+            evaluator,
+        ):
+            calls.append(
+                (
+                    "optimize",
+                    problem,
+                    evaluator,
+                )
+            )
+
+            return fake_result
+
+    def fake_confirm(
+        evaluator,
+        result,
+    ):
+        calls.append(
+            (
+                "confirm",
+                evaluator,
+                result,
+            )
+        )
+
+        return fake_confirmation
+
+    class FakeLogger:
+        def log_optimizer_trace(
+            self,
+            result,
+            *,
+            stage,
+            cup,
+        ):
+            calls.append(
+                (
+                    "trace",
+                    result,
+                    stage,
+                    cup,
+                )
+            )
+
+            return ()
+
+    logger = FakeLogger()
+
+    maintenance_hook = (
+        lambda state:
+            state
+    )
+
+    monkeypatch.setattr(
+        module,
+        "_build_primary_rcds_problem",
+        fake_builder,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "_Cup6PrimaryRCDSEvaluator",
+        FakeEvaluator,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "RobustConjugateDirectionOptimizer",
+        FakeOptimizer,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "_confirm_primary_rcds_best",
+        fake_confirm,
+    )
+
+    (
+        result,
+        confirmation,
+        state,
+    ) = module._run_primary_rcds(
+        object(),
+        current,
+        cup5,
+        profile,
+        source_tracker,
+        settling,
+        measurement_policy,
+        comparison_policy,
+        optimization_policy,
+        rcds_policy=(
+            rcds_policy
+        ),
+        noise_floor_a=1e-12,
+        logger=logger,
+        maintenance_hook=(
+            maintenance_hook
+        ),
+    )
+
+    assert (
+        result
+        is fake_result
+    )
+
+    assert (
+        confirmation
+        is fake_confirmation
+    )
+
+    assert (
+        state
+        is final_state
+    )
+
+    assert [
+        call[
+            0
+        ]
+        for call
+        in calls
+    ] == [
+        "builder",
+        "evaluator",
+        "optimizer_init",
+        "optimize",
+        "trace",
+        "confirm",
+    ]
+
+    # --------------------------------------------------------
+    # Builder contract.
+    # --------------------------------------------------------
+
+    (
+        _,
+        builder_state,
+        builder_profile,
+        builder_comparison,
+        builder_policy,
+    ) = calls[
+        0
+    ]
+
+    assert (
+        builder_state
+        is current
+    )
+
+    assert (
+        builder_profile
+        is profile
+    )
+
+    assert (
+        builder_comparison
+        is comparison_policy
+    )
+
+    assert (
+        builder_policy
+        is optimization_policy
+    )
+
+    # --------------------------------------------------------
+    # Evaluator construction contract.
+    # --------------------------------------------------------
+
+    evaluator_kwargs = calls[
+        1
+    ][
+        1
+    ]
+
+    assert (
+        evaluator_kwargs[
+            "working_state"
+        ]
+        is current
+    )
+
+    assert (
+        evaluator_kwargs[
+            "cup5_reference_state"
+        ]
+        is cup5
+    )
+
+    assert (
+        evaluator_kwargs[
+            "tracker"
+        ]
+        is source_tracker
+    )
+
+    assert (
+        evaluator_kwargs[
+            "settling_policies"
+        ]
+        is settling
+    )
+
+    assert (
+        evaluator_kwargs[
+            "measurement_policy"
+        ]
+        is measurement_policy
+    )
+
+    assert (
+        evaluator_kwargs[
+            "noise_floor_a"
+        ]
+        == pytest.approx(
+            1e-12
+        )
+    )
+
+    assert (
+        evaluator_kwargs[
+            "logger"
+        ]
+        is logger
+    )
+
+    assert (
+        evaluator_kwargs[
+            "maintenance_hook"
+        ]
+        is maintenance_hook
+    )
+
+    # --------------------------------------------------------
+    # RCDS construction and execution.
+    # --------------------------------------------------------
+
+    assert calls[
+        2
+    ] == (
+        "optimizer_init",
+        rcds_policy,
+    )
+
+    assert (
+        calls[
+            3
+        ][
+            1
+        ]
+        is fake_problem
+    )
+
+    # --------------------------------------------------------
+    # Completed trace must be persisted before the fresh
+    # best-point confirmation, matching the established
+    # Cup-2/Cup-4 production pattern.
+    # --------------------------------------------------------
+
+    assert calls[
+        4
+    ] == (
+        "trace",
+        fake_result,
+        6,
+        6,
+    )
+
+    assert (
+        calls[
+            5
+        ][
+            2
+        ]
+        is fake_result
+    )
