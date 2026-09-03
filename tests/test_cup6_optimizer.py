@@ -1759,3 +1759,159 @@ def test_primary_rcds_full_mock_integration_loop(
             )
             is True
         )
+
+    # ------------------------------------------------------------
+    # Best-point confirmation contract.
+    #
+    # optimizer.optimize() leaves the physical machine at its last
+    # real evaluation. Production finalization must explicitly
+    # return to result.best_evaluation.point and freshly measure it.
+    # ------------------------------------------------------------
+
+    last_state_before_confirmation = (
+        evaluator.working_state
+    )
+
+    transition_count_before_confirmation = len(
+        transition_calls
+    )
+
+    assert (
+        transition_count_before_confirmation
+        == result.evaluations
+    )
+
+    history_before_confirmation = tuple(
+        result.history
+    )
+
+    confirmation = (
+        module._confirm_primary_rcds_best(
+            evaluator,
+            result,
+        )
+    )
+
+    # Confirmation is one additional REAL evaluator transition.
+    assert (
+        len(
+            transition_calls
+        )
+        == transition_count_before_confirmation
+        + 1
+    )
+
+    assert (
+        len(
+            transition_calls
+        )
+        == result.evaluations
+        + 1
+    )
+
+    (
+        confirmation_source,
+        confirmation_target,
+    ) = transition_calls[
+        -1
+    ]
+
+    # Return movement starts from the last physical state left by
+    # optimizer.optimize().
+    assert (
+        confirmation_source.state_id
+        == last_state_before_confirmation.state_id
+    )
+
+    # The fresh evaluator reports exactly the optimizer best point.
+    assert (
+        confirmation.point
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    # The actual physical Lens4/X3/Y3 state must now be the same
+    # point.
+    assert (
+        physical_point(
+            confirmation_target
+        )
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    assert (
+        physical_point(
+            evaluator.working_state
+        )
+        == pytest.approx(
+            result.best_evaluation.point
+        )
+    )
+
+    assert (
+        evaluator.working_state.state_id
+        == confirmation_target.state_id
+    )
+
+    assert (
+        machine[
+            "state"
+        ].state_id
+        == confirmation_target.state_id
+    )
+
+    assert (
+        problem.is_allowed(
+            confirmation.point
+        )
+        is True
+    )
+
+    # Complete upstream Cup-5 transport remains frozen after the
+    # explicit return move.
+    for parameter_name in (
+        module.CUP6_FROZEN_UPSTREAM_PARAMETERS
+    ):
+        assert (
+            evaluator.working_state.parameters[
+                parameter_name
+            ]
+            == cup5.parameters[
+                parameter_name
+            ]
+        )
+
+    assert (
+        evaluator.working_state.rfq
+        == cup5.rfq
+    )
+
+    # The synthetic objective is deterministic, so a fresh
+    # best-point measurement reproduces the earlier best objective.
+    #
+    # Real beam data is intentionally not required to do this.
+    assert (
+        confirmation.value
+        == pytest.approx(
+            result.best_evaluation.value
+        )
+    )
+
+    # Confirmation occurs outside optimizer.optimize() and must not
+    # mutate OptimizationResult history.
+    assert (
+        tuple(
+            result.history
+        )
+        == history_before_confirmation
+    )
+
+    assert (
+        len(
+            result.history
+        )
+        == result.evaluations
+    )
