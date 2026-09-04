@@ -601,3 +601,261 @@ def test_asymmetry_builder_preserves_c_and_f():
             -300.0
         )
     )
+
+
+def test_focus_astigmatism_controls_have_expected_anchor_points():
+    from sirius.qpt_model import (
+        qpt_commands_from_focus_astigmatism,
+    )
+
+    convert = (
+        qpt_commands_from_focus_astigmatism
+    )
+
+    assert (
+        convert(
+            0.0,
+            50.0,
+        )
+        == pytest.approx(
+            (
+                0.0,
+                0.0,
+                0.0,
+            )
+        )
+    )
+
+    assert (
+        convert(
+            100.0,
+            50.0,
+        )
+        == pytest.approx(
+            (
+                6000.0,
+                6000.0,
+                6000.0,
+            )
+        )
+    )
+
+    assert (
+        convert(
+            50.0,
+            50.0,
+        )
+        == pytest.approx(
+            (
+                3000.0,
+                3000.0,
+                3000.0,
+            )
+        )
+    )
+
+    # Positive A deviation:
+    # QPT1 up, QPT3 down.
+    assert (
+        convert(
+            50.0,
+            100.0,
+        )
+        == pytest.approx(
+            (
+                6000.0,
+                3000.0,
+                0.0,
+            )
+        )
+    )
+
+    # Negative A deviation:
+    # QPT1 down, QPT3 up.
+    assert (
+        convert(
+            50.0,
+            0.0,
+        )
+        == pytest.approx(
+            (
+                0.0,
+                3000.0,
+                6000.0,
+            )
+        )
+    )
+
+
+def test_focus_astigmatism_uses_available_voltage_headroom():
+    from sirius.qpt_model import (
+        qpt_commands_from_focus_astigmatism,
+    )
+
+    convert = (
+        qpt_commands_from_focus_astigmatism
+    )
+
+    # F=25 -> common focus voltage = 1500 V.
+    assert (
+        convert(
+            25.0,
+            100.0,
+        )
+        == pytest.approx(
+            (
+                3000.0,
+                1500.0,
+                0.0,
+            )
+        )
+    )
+
+    assert (
+        convert(
+            25.0,
+            0.0,
+        )
+        == pytest.approx(
+            (
+                0.0,
+                1500.0,
+                3000.0,
+            )
+        )
+    )
+
+    # F=75 -> common focus voltage = 4500 V.
+    # Only 1500 V of symmetric headroom remains.
+    assert (
+        convert(
+            75.0,
+            100.0,
+        )
+        == pytest.approx(
+            (
+                6000.0,
+                4500.0,
+                3000.0,
+            )
+        )
+    )
+
+    assert (
+        convert(
+            75.0,
+            0.0,
+        )
+        == pytest.approx(
+            (
+                3000.0,
+                4500.0,
+                6000.0,
+            )
+        )
+    )
+
+    # At F=0 and F=100 there is no symmetric headroom,
+    # therefore A cannot change the physical commands.
+    for astigmatism in (
+        0.0,
+        50.0,
+        100.0,
+    ):
+        assert (
+            convert(
+                0.0,
+                astigmatism,
+            )
+            == pytest.approx(
+                (
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            )
+        )
+
+        assert (
+            convert(
+                100.0,
+                astigmatism,
+            )
+            == pytest.approx(
+                (
+                    6000.0,
+                    6000.0,
+                    6000.0,
+                )
+            )
+        )
+
+
+def test_focus_astigmatism_rejects_invalid_controls():
+    from sirius.qpt_model import (
+        qpt_commands_from_focus_astigmatism,
+    )
+
+    convert = (
+        qpt_commands_from_focus_astigmatism
+    )
+
+    for focus in (
+        -0.001,
+        100.001,
+        float("nan"),
+        float("inf"),
+    ):
+        with pytest.raises(
+            ValueError
+        ):
+            convert(
+                focus,
+                50.0,
+            )
+
+    for astigmatism in (
+        -0.001,
+        100.001,
+        float("nan"),
+        float("inf"),
+    ):
+        with pytest.raises(
+            ValueError
+        ):
+            convert(
+                50.0,
+                astigmatism,
+            )
+
+    for maximum_voltage_v in (
+        0.0,
+        -1.0,
+        float("nan"),
+        float("inf"),
+    ):
+        with pytest.raises(
+            ValueError
+        ):
+            convert(
+                50.0,
+                50.0,
+                maximum_voltage_v=(
+                    maximum_voltage_v
+                ),
+            )
+
+    assert (
+        convert(
+            50.0,
+            50.0,
+            maximum_voltage_v=4000.0,
+        )
+        == pytest.approx(
+            (
+                2000.0,
+                2000.0,
+                2000.0,
+            )
+        )
+    )

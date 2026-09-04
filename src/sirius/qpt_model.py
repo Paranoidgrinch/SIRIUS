@@ -351,6 +351,171 @@ def qpt_commands_from_cfa(
     )
 
 
+QPT_VIRTUAL_CONTROL_MIN_PERCENT = 0.0
+QPT_VIRTUAL_CONTROL_MAX_PERCENT = 100.0
+QPT_ASTIGMATISM_NEUTRAL_PERCENT = 50.0
+
+
+def qpt_commands_from_focus_astigmatism(
+    focus_percent: float,
+    astigmatism_percent: float,
+    *,
+    maximum_voltage_v: float = 6000.0,
+) -> tuple[
+    float,
+    float,
+    float,
+]:
+    """
+    Convert normalized FLAVIA Focus/Astigmatism controls to QPT commands.
+
+    Focus is the common 0..100 focusing control:
+        F=0   -> QPT1=QPT2=QPT3=0 V
+        F=100 -> QPT1=QPT2=QPT3=maximum_voltage_v
+
+    Astigmatism is centered at A=50:
+        A=50  -> no differential correction
+        A>50  -> QPT1 increases while QPT3 decreases
+        A<50  -> QPT1 decreases while QPT3 increases
+
+    QPT2 remains at the Focus voltage.
+
+    The astigmatism amplitude is limited by the available
+    symmetric voltage headroom, so no command can leave the
+    physical 0..maximum_voltage_v interval.
+    """
+
+    focus = float(
+        focus_percent
+    )
+
+    astigmatism = float(
+        astigmatism_percent
+    )
+
+    maximum = float(
+        maximum_voltage_v
+    )
+
+    if not math.isfinite(
+        maximum
+    ):
+        raise ValueError(
+            "maximum_voltage_v must be finite"
+        )
+
+    if maximum <= 0.0:
+        raise ValueError(
+            "maximum_voltage_v must be greater than zero"
+        )
+
+    for (
+        name,
+        value,
+    ) in (
+        (
+            "focus_percent",
+            focus,
+        ),
+        (
+            "astigmatism_percent",
+            astigmatism,
+        ),
+    ):
+        if not math.isfinite(
+            value
+        ):
+            raise ValueError(
+                f"{name} must be finite"
+            )
+
+        if not (
+            QPT_VIRTUAL_CONTROL_MIN_PERCENT
+            <= value
+            <= QPT_VIRTUAL_CONTROL_MAX_PERCENT
+        ):
+            raise ValueError(
+                f"{name} must be within 0..100"
+            )
+
+    focus_voltage_v = (
+        maximum
+        * focus
+        / QPT_VIRTUAL_CONTROL_MAX_PERCENT
+    )
+
+    symmetric_headroom_v = min(
+        focus_voltage_v,
+        maximum
+        - focus_voltage_v,
+    )
+
+    astigmatism_fraction = (
+        (
+            astigmatism
+            - QPT_ASTIGMATISM_NEUTRAL_PERCENT
+        )
+        / QPT_ASTIGMATISM_NEUTRAL_PERCENT
+    )
+
+    astigmatism_delta_v = (
+        astigmatism_fraction
+        * symmetric_headroom_v
+    )
+
+    qpt1_v = (
+        focus_voltage_v
+        + astigmatism_delta_v
+    )
+
+    qpt2_v = (
+        focus_voltage_v
+    )
+
+    qpt3_v = (
+        focus_voltage_v
+        - astigmatism_delta_v
+    )
+
+    for (
+        name,
+        value,
+    ) in (
+        (
+            "qpt1_v",
+            qpt1_v,
+        ),
+        (
+            "qpt2_v",
+            qpt2_v,
+        ),
+        (
+            "qpt3_v",
+            qpt3_v,
+        ),
+    ):
+        if not (
+            0.0
+            <= value
+            <= maximum
+        ):
+            raise RuntimeError(
+                f"{name} escaped the physical QPT command range"
+            )
+
+    return (
+        float(
+            qpt1_v
+        ),
+        float(
+            qpt2_v
+        ),
+        float(
+            qpt3_v
+        ),
+    )
+
+
 def qpt_commands_from_om(
     common_v: float,
     outer_strength_v: float,
