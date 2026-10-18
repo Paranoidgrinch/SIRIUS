@@ -1,14 +1,11 @@
 # SIRIUS
 
-SIRIUS is the automated ion-beam tuning and transmission optimization system for the
-[FLAVIA](https://github.com/Paranoidgrinch/FLAVIA-alpha-1.1-Fully-integrated-Laser-Anion-Variables-for-AMS-)-controlled
-laser-AMS beamline at CologneAMS. It tunes the beam stage by stage from the ion source to the last Faraday
-cup, with physics models of each section as the starting point and RCDS optimization for the fine tuning.
-For the source section alone, see the compact [mcsirius](https://github.com/Paranoidgrinch/mcsirius).
+Automated ion-beam tuning and transmission optimization for the laser-AMS beamline at CologneAMS, which is
+controlled by [FLAVIA](https://github.com/Paranoidgrinch/FLAVIA-alpha-1.1-Fully-integrated-Laser-Anion-Variables-for-AMS-).
+SIRIUS tunes the beam section by section from the ion source to the last Faraday cup. Physics models of each
+section provide the starting point; RCDS optimization does the fine tuning. In development.
 
-![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
-![Status](https://img.shields.io/badge/status-in_development-D29922?style=flat-square)
-[![License](https://img.shields.io/badge/license-GPL--3.0-394B59?style=flat-square)](LICENSE)
+[mcsirius](https://github.com/Paranoidgrinch/mcsirius) is a smaller tool for the source section alone.
 
 ## Design principles
 
@@ -56,4 +53,4 @@ per ion mass to `data/mass_profiles/`.
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+GPL-3.0, see [LICENSE](LICENSE).
